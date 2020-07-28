@@ -5,9 +5,6 @@
 #include <WiFiUdp.h>
 #include <ps2mouse.h>
 
-// Debugging
-//#define __DEBUG_MOUSE__
-
 // HUB Commands
 #define HUB_SYS_RESET     1
 #define HUB_DIR_LS       10
@@ -40,21 +37,23 @@
 #define HUB_ESP_MOUSE   104
 #define HUB_ESP_SCAN    105
 
-// ESP8266 Settings
-#define SLOTS 16
+// COMM Params
+#define SLOTS    16     // Number of connection handles
+#define PACKET   1024   // Max. packet length (bytes)
+
+// Buffers for data exchange
+char megaBuffer[PACKET], megaLen;
+
+// ESP8266 settings
 IPAddress tcpIp[SLOTS];
 IPAddress udpIp[SLOTS];
-unsigned int srvPort;
 unsigned int tcpPort[SLOTS];
 unsigned int udpPort[SLOTS];
-WiFiServer srv(80); WiFiClient cli; // Server/Client pair
+unsigned int srvPort;
 WiFiClient tcp[SLOTS];
 WiFiUDP    udp[SLOTS];
+WiFiServer srv(80); WiFiClient cli; // Web server/client pair
 char udpSlot=0, tcpSlot=0;
-
-// Buffer for Data Exchange
-char sendBuffer[256], sendLen;
-char recvBuffer[256], recvLen;
 
 // Mouse Setting
 PS2Mouse mouse;
@@ -83,20 +82,23 @@ void udpOpen(unsigned char slot) {
     }
 }
 
-unsigned int udpReceive(unsigned char slot) {
+void udpReceive(unsigned char slot) {
     if (udp[slot].parsePacket()) {
-        recvLen = udp[slot].read(recvBuffer, 255);
-        recvBuffer[recvLen] = 0;
-        return recvLen;
-    } else {
-        return 0;
+        // Read data from UDP
+        megaLen = udp[slot].read(megaBuffer, PACKET-1);
+        megaBuffer[megaLen] = 0;
+        // Send it to mega        
+        Serial.print("CMD");
+        Serial.write(HUB_UDP_RECV);    
+        Serial.write(slot); 
+        writeBuffer(megaBuffer, megaLen);         
     }
 }
 
 void udpSend(unsigned char slot) {
-    sendLen = readBuffer(sendBuffer);
+    megaLen = readBuffer(megaBuffer);
     udp[slot].beginPacket(udpIp[slot], udpPort[slot]);
-    udp[slot].write(sendBuffer, sendLen);
+    udp[slot].write(megaBuffer, megaLen);
     udp[slot].endPacket();
 }
 
@@ -125,19 +127,22 @@ void tcpOpen(unsigned char slot) {
     }
 }
 
-unsigned int tcpReceive(unsigned char slot) {
+void tcpReceive(unsigned char slot) {
     if (tcp[slot].available()) {
-        recvLen = tcp[slot].read((unsigned char*)recvBuffer, 255);
-        recvBuffer[recvLen] = 0;
-        return recvLen;
-    } else {
-        return 0;
+       // Read data from TCP
+        megaLen = tcp[slot].read((unsigned char*)megaBuffer, PACKET-1);
+        megaBuffer[megaLen] = 0;
+        // Send it to mega        
+        Serial.print("CMD");
+        Serial.write(HUB_TCP_RECV);    
+        Serial.write(slot); 
+        writeBuffer(megaBuffer, megaLen);                 
     }
 }
 
 void tcpSend(unsigned char slot) {        
-    sendLen = readBuffer(sendBuffer);
-    tcp[slot].write(sendBuffer, sendLen);
+    megaLen = readBuffer(megaBuffer);
+    tcp[slot].write(megaBuffer, megaLen);
 }
 
 void tcpClose(unsigned char slot) {
@@ -155,24 +160,26 @@ void srvOpen() {
     reply(HUB_ESP_NOTIF, "Server Started");
 }
 
-unsigned int srvReceive() {
+void srvReceive() {
     // Only receive once current client has been handled
-    if (cli.available()) return 0;
+    if (cli.available()) return;
 
     // Check if someone else came along...
     cli = srv.available();
     if (cli.available()) {
-        recvLen = cli.read((unsigned char*)recvBuffer, 255);
-        recvBuffer[recvLen] = 0;
-        return recvLen;             
-    } else {
-        return 0;
+        megaLen = cli.read((unsigned char*)megaBuffer, PACKET-1);
+        megaBuffer[megaLen] = 0;
+        // Send it to mega        
+        Serial.print("CMD");
+        Serial.write(HUB_SRV_RECV);    
+        writeBuffer(megaBuffer, megaLen);         
+        
     }
 }
 
 void srvSend() {        
-    sendLen = readBuffer(sendBuffer);
-    cli.write(sendBuffer, sendLen);
+    megaLen = readBuffer(megaBuffer);
+    cli.write(megaBuffer, megaLen);
     cli.stop();
 }
 
@@ -248,6 +255,16 @@ void wifiConnect(char *ssid, char *pswd) {
     reply(HUB_ESP_IP, ip);
 }
 
+void wifiScan() {
+    unsigned char len = WiFi.scanNetworks();
+    strcpy(megaBuffer, "SSID List:\n");
+    for (byte i=0; i<len; i++) {
+        strcat(megaBuffer, WiFi.SSID(i).c_str());
+        strcat(megaBuffer, "\n");
+    }
+    reply(HUB_ESP_NOTIF, megaBuffer);  
+}
+
 ////////////////////////////////
 //       ESP8266 Routines     //
 ////////////////////////////////
@@ -293,16 +310,7 @@ void loop(void) {
             break;
 
           case HUB_ESP_SCAN:
-            // Print list of visible networks
-            unsigned char len;
-            char ssidList[1024];
-            strcpy(ssidList, "SSID List:\n");
-            len = WiFi.scanNetworks();
-            for (byte i=0; i<len; i++) {
-                strcat(ssidList, WiFi.SSID(i).c_str());
-                strcat(ssidList, "\n");
-            }
-            reply(HUB_ESP_NOTIF, ssidList);
+            wifiScan();
             break;
 
           case HUB_UDP_SLOT:
@@ -354,30 +362,10 @@ void loop(void) {
         }
     }
 
-    // Check UDP slots
-    for (byte slot=0; slot<SLOTS; slot++) {
-        if (udpReceive(slot)) {
-            Serial.print("CMD");
-            Serial.write(HUB_UDP_RECV);    
-            writeBuffer(recvBuffer, recvLen);  
-        }
-    }
-    
-    // Check TCP slots
-    for (byte slot=0; slot<SLOTS; slot++) {
-        if (tcpReceive(slot)) {
-            Serial.print("CMD");
-            Serial.write(HUB_TCP_RECV);    
-            writeBuffer(recvBuffer, recvLen);  
-        }    
-    }
-
-    // Check Server connections
-    if (srvReceive()) {
-        Serial.print("CMD");
-        Serial.write(HUB_SRV_RECV);    
-        writeBuffer(recvBuffer, recvLen);  
-    }    
+    // Check UDP/TCP slots and Server
+    for (byte slot=0; slot<SLOTS; slot++) udpReceive(slot);
+    for (byte slot=0; slot<SLOTS; slot++) tcpReceive(slot);
+    srvReceive();
     
     // Read Mouse State
     if (mousePeriod && (millis()-mouseTimer > mousePeriod) && mouse.update()) {
@@ -387,13 +375,6 @@ void loop(void) {
         Serial.write(mouse.status);
         Serial.write(mouse.x);
         Serial.write(mouse.y);
-#ifdef __DEBUG_MOUSE__
-        Serial.print("Mouse: "); Serial.print((mouseB&2)>0);   // L but
-        Serial.print(","); Serial.print((mouseB&8)>0);   // M but
-        Serial.print(","); Serial.print((mouseB&4)>0);   // R but        
-        Serial.print(","); Serial.print((signed byte)mouse.x);
-        Serial.print(","); Serial.println((signed byte)mouse.y);
-#endif        
     }
 }
 
