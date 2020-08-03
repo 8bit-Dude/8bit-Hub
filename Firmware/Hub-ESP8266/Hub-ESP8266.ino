@@ -1,6 +1,7 @@
 
 // System libraries
 #include <ESP8266WiFi.h>
+#include <ESP8266httpUpdate.h>
 #include <WiFiClient.h>
 #include <WiFiUdp.h>
 #include <ps2mouse.h>
@@ -28,18 +29,27 @@
 #define HUB_TCP_SLOT     44
 #define HUB_SRV_OPEN     50
 #define HUB_SRV_RECV     51
-#define HUB_SRV_SEND     52
-#define HUB_SRV_CLOSE    53
+#define HUB_SRV_HEADER   52
+#define HUB_SRV_BODY     53
+#define HUB_SRV_FOOTER   54
+#define HUB_SRV_CLOSE    55
 #define HUB_ESP_CONNECT 100
 #define HUB_ESP_NOTIF   101
 #define HUB_ESP_ERROR   112
 #define HUB_ESP_IP      103
 #define HUB_ESP_MOUSE   104
 #define HUB_ESP_SCAN    105
+#define HUB_ESP_UPDATE  106
+#define HUB_ESP_VERSION 107
 
-// COMM Params
+// ESP Params
 #define SLOTS    16     // Number of connection handles
 #define PACKET   1024   // Max. packet length (bytes)
+
+char version[] = "ESP version 001";
+
+// Wifi connection params
+char ssid[32], pswd[64];
 
 // Buffers for data exchange
 char megaBuffer[PACKET], megaLen;
@@ -54,6 +64,7 @@ WiFiClient tcp[SLOTS];
 WiFiUDP    udp[SLOTS];
 WiFiServer srv(80); WiFiClient cli; // Web server/client pair
 char udpSlot=0, tcpSlot=0;
+uint32_t timeout, srvTimeout;
 
 // Mouse Setting
 PS2Mouse mouse;
@@ -156,34 +167,82 @@ void tcpClose(unsigned char slot) {
 
 void srvOpen() {            
     readInt(&srvPort); 
+    readInt(&srvTimeout);
     srv.begin(srvPort);
     reply(HUB_ESP_NOTIF, "Server Started");
 }
 
 void srvReceive() {
-    // Only receive once current client has been handled
-    if (cli.available()) return;
+    // Check if client is currently alive
+    if (cli) {
+        if (millis()<timeout) {
+            return;
+        } else {
+            cli.stop();
+        }
+    }
 
     // Check if someone else came along...
     cli = srv.available();
-    if (cli.available()) {
-        megaLen = cli.read((unsigned char*)megaBuffer, PACKET-1);
-        megaBuffer[megaLen] = 0;
-        // Send it to mega        
-        Serial.print("CMD");
-        Serial.write(HUB_SRV_RECV);    
-        writeBuffer(megaBuffer, megaLen);         
-        
+    if (cli) {
+        // Setup request reader
+        char currentLine[256];
+        unsigned char currentLen = 0;
+        megaLen = 0;
+
+        // Parse request
+        timeout = millis()+srvTimeout;          // set overall time-out
+        while (cli.connected() && millis() < timeout) {
+            if (cli.available()) {  
+                // Retrieve incoming message byte-by-byte
+                char c = cli.read();             // read a byte, then
+                if (c == '\n') {                 // check if it is a newline character...
+                    // if the current line is blank, you got two newline characters in a row.
+                    // that's the end of the client HTTP request, so forward request
+                    if (megaLen) {
+                        // Send data to mega        
+                        Serial.print("CMD");
+                        Serial.write(HUB_SRV_RECV);
+                        writeBuffer(megaBuffer, megaLen);
+                        return;                       // return to main loop
+                    } else {
+                        // only keep the HTTP command
+                        if (!strncmp(currentLine, "GET", 3)) {
+                            megaLen = currentLen;
+                            for (byte i=0; i<currentLen; i++) { 
+                                megaBuffer[i] = currentLine[i];
+                            }
+                        }
+                        currentLen = 0;                           
+                    }
+                } else if (c != '\r') {  // if you got anything else but a carriage return character,
+                    currentLine[currentLen++] = c;      // add it to the end of the currentLine
+                }             
+            }
+        }
+
+        // Could not process request within time-out...
+        cli.stop();
     }
 }
 
-void srvSend() {        
-    megaLen = readBuffer(megaBuffer);
-    cli.write(megaBuffer, megaLen);
-    cli.stop();
+void srvHeader() {
+    if (cli) cli.write("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n");
 }
 
-void srvClose() {            
+void srvBody() {       
+    megaLen = readBuffer(megaBuffer);
+    if (cli) cli.write(megaBuffer, megaLen);
+}
+
+void srvFooter() {
+    if (cli) {
+        cli.write("\r\n\r\n");
+        cli.stop();
+    }
+}
+
+void srvClose() {         
     srv.stop();
     reply(HUB_ESP_NOTIF, "Server Stopped");
 }
@@ -192,15 +251,17 @@ void srvClose() {
 //      MEGA communication    //
 ////////////////////////////////
 
-void writeBuffer(char* buffer, char len) {
-    // Write buffer of known length
-    Serial.write(len);
-    Serial.write(buffer, len);
+void writeChar(unsigned char input) {
+    Serial.write(input);
 }
 
 void writeInt(unsigned int input) {
-    // Write int
     Serial.write((char*)&input, 2);
+}
+
+void writeBuffer(char* buffer, char len) {
+    Serial.write(len);
+    Serial.write(buffer, len);
 }
 
 unsigned char readChar() {
@@ -278,8 +339,6 @@ void setup(void) {
     Serial.readString();
 }
 
-char ssid[32], pswd[64];
-
 void loop(void) {
     // Auto-reconnect?
     if (WiFi.status() != WL_CONNECTED) {
@@ -287,10 +346,15 @@ void loop(void) {
     }
     
     // Check commands from MEGA
+    t_httpUpdate_return ret;
     char cmd;
     if (Serial.find("CMD")) {
         cmd = readChar();
         switch (cmd) {
+          
+          case HUB_ESP_VERSION:
+            reply(HUB_ESP_NOTIF, version); 
+            break;
           
           case HUB_ESP_CONNECT:
             readBuffer(ssid);
@@ -311,6 +375,22 @@ void loop(void) {
 
           case HUB_ESP_SCAN:
             wifiScan();
+            break;
+
+          case HUB_ESP_UPDATE:
+            ESPhttpUpdate.rebootOnUpdate(false);
+            ret = ESPhttpUpdate.update("http://8bit-unity.com/hub-esp8266.bin");
+            switch(ret) {
+            case HTTP_UPDATE_FAILED:
+                reply(HUB_ESP_NOTIF, "Update failed");
+                break;                
+            case HTTP_UPDATE_NO_UPDATES:
+                reply(HUB_ESP_NOTIF, "No update available");
+                break;                
+            case HTTP_UPDATE_OK:
+                reply(HUB_ESP_NOTIF, "Update completed");
+                break;  
+            }              
             break;
 
           case HUB_UDP_SLOT:
@@ -349,8 +429,16 @@ void loop(void) {
             srvOpen();
             break;  
 
-          case HUB_SRV_SEND:
-            srvSend();
+          case HUB_SRV_HEADER:
+            srvHeader();
+            break;  
+                        
+          case HUB_SRV_BODY:
+            srvBody();
+            break;  
+                        
+          case HUB_SRV_FOOTER:
+            srvFooter();
             break;  
                         
           case HUB_SRV_CLOSE:

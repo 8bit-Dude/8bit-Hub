@@ -38,7 +38,7 @@ byte hubMode = MODE_LYNX;
 // COMM Params
 #define FILES    16    // Number of file handles
 #define SLOTS    16    // Number of connection handles
-#define PACKET   256   // Max. packet length (bytes)
+#define PACKET   512   // Max. packet length (bytes)
 #define TIMEOUT  1000  // Packet timout (milliseconds)
 
 // HUB Commands
@@ -64,14 +64,18 @@ byte hubMode = MODE_LYNX;
 #define HUB_TCP_SLOT     44
 #define HUB_SRV_OPEN     50
 #define HUB_SRV_RECV     51
-#define HUB_SRV_SEND     52
-#define HUB_SRV_CLOSE    53
+#define HUB_SRV_HEADER   52
+#define HUB_SRV_BODY     53
+#define HUB_SRV_FOOTER   54
+#define HUB_SRV_CLOSE    55
 #define HUB_ESP_CONNECT 100
 #define HUB_ESP_NOTIF   101
 #define HUB_ESP_ERROR   112
 #define HUB_ESP_IP      103
 #define HUB_ESP_MOUSE   104
 #define HUB_ESP_SCAN    105
+#define HUB_ESP_UPDATE  106
+#define HUB_ESP_VERSION 107
 
 #ifdef __DEBUG_CMD__
   const char* cmdString[] = {"","SYS_RESET","","","","","","","","",
@@ -79,7 +83,7 @@ byte hubMode = MODE_LYNX;
                              "FIL_OPEN","FIL_SEEK","FIL_READ","FIL_WRITE","FILE_CLOSE","","","","","",
                              "UDP_OPEN","UDP_RECV","UDP_SEND","UDP_CLOSE","UDP_SLOT","","","","","",
                              "TCP_OPEN","TCP_RECV","TCP_SEND","TCP_CLOSE","TCP_SLOT","","","","","",
-                             "SRV_OPEN","SRV_RECV","SRV_SEND","SRV_CLOSE","","","","","",""};
+                             "SRV_OPEN","SRV_RECV","SRV_HEADER","SRV_BODY","SRV_FOOTER","SRV_CLOSE","","","",""};
 #endif
 
 // SD Card Paramds
@@ -105,7 +109,6 @@ typedef struct list {
     struct list* next;
 } list_t;
 
-
 ////////////////////////////////
 //      PACKET functions      //
 ////////////////////////////////
@@ -114,7 +117,7 @@ unsigned char txBuffer[PACKET];
 unsigned char countID, rxID, txID, rxLen=0, txLen=0;
 packet_t* hubHead = NULL;
 
-void pushPacket(unsigned char cmd) {
+void pushPacket(unsigned char cmd, signed char slot) {
   // Create new packet
     packet_t* packet = malloc(sizeof(packet_t));
     packet->next = NULL;
@@ -125,10 +128,11 @@ void pushPacket(unsigned char cmd) {
     packet->timeout = millis() + TIMEOUT;
 
     // Copy data to packet
-    packet->len = espLen+1;
-    packet->data = (unsigned char*)malloc(espLen+1);
+    packet->len = espLen+2;
+    packet->data = (unsigned char*)malloc(espLen+2);
     packet->data[0] = cmd;
-    memcpy(&packet->data[1], espBuffer, espLen);
+    packet->data[1] = slot;
+    memcpy(&packet->data[2], espBuffer, espLen);
     
     // Append packet at tail of linked list
     if (!hubHead) {
@@ -763,9 +767,9 @@ void readError() {
 
 void readUdp() {
     // Store data into packet
-    readChar(); // slot
+    char slot = readChar(); // slot
     if (readBuffer()) {
-        pushPacket(HUB_UDP_RECV);  
+        pushPacket(HUB_UDP_RECV, slot);  
     #if defined(__DEBUG_UDP__)
         Serial.print("UDP RECV: ");
         Serial.write(espBuffer, espLen); 
@@ -776,9 +780,9 @@ void readUdp() {
 
 void readTcp() {
     // Store data into packet
-    readChar(); // slot
+    char slot = readChar(); // slot
     if (readBuffer()) {
-        pushPacket(HUB_TCP_RECV);  
+        pushPacket(HUB_TCP_RECV, slot);  
     #if defined(__DEBUG_TCP__)
         Serial.print("TCP RECV: ");
         Serial.write(espBuffer, espLen); 
@@ -790,7 +794,7 @@ void readTcp() {
 void readSrv() {
     // Store data into packet
     if (readBuffer()) {
-        pushPacket(HUB_SRV_RECV);  
+        pushPacket(HUB_SRV_RECV, -1);  
     #if defined(__DEBUG_SRV__)
         Serial.print("SRV RECV: ");
         Serial.write(espBuffer, espLen); 
@@ -814,11 +818,7 @@ void setupESP() {
 
     // Start Mouse
     writeCMD(HUB_ESP_MOUSE);
-    Serial3.write(100);   // Refresh period (ms)
-#ifdef __DEBUG_SRV__
-    writeCMD(HUB_SRV_OPEN);
-    writeInt(1234);  
-#endif       
+    Serial3.write(100);   // Refresh period (ms)     
 }
 
 unsigned char wifiScan() {
@@ -927,7 +927,8 @@ void runTests() {
     lcd.setCursor(0, 1); lcd.print("Joy2: , , , , ,");
     lcd.setCursor(0, 2); lcd.print("Joy3: , , , , ,");
     lcd.setCursor(0, 3); lcd.print("Mous:   ,   , , ,");
-    while (true) {
+    uint32_t timeout = millis()+30000;
+    while (millis()<timeout) {
         // Check Joysticks
         readJOY();
         for (byte i=0; i<3; i++) {
@@ -1348,16 +1349,24 @@ void loop() {
         }
     }
 
-    // Process Lynx Communication
+    // Process com. with host device
+    byte code = COMM_ERR_NODATA;
     long time1 = micros();
-    byte code = lynxRecvPacket();
-    if (code != COMM_ERR_NODATA) {
-        // Send reply immediately (almost)
-        delayMicroseconds(6*lynxBitPeriod);   // Bauds: 62500=6* / 41666=8* / 9600=2*
-        lynxSendPacket();
-        long time2 = micros();
-        
-        // Process received data
+    switch (hubMode) {
+    case MODE_LYNX:
+        // Process Lynx Communication
+        code = lynxRecvPacket();
+        if (code != COMM_ERR_NODATA) {
+            // Send reply immediately (almost)
+            delayMicroseconds(6*lynxBitPeriod);   // Bauds: 62500=6* / 41666=8* / 9600=2*
+            lynxSendPacket();
+            long time2 = micros();
+        }
+        break;
+    }
+
+    // Process received data
+    if (code != COMM_ERR_NODATA) {        
         unsigned char tmp;
         unsigned int offset;        
         if (txLen) {
@@ -1403,29 +1412,25 @@ void loop() {
                 break;
 
             case HUB_FIL_READ:
-                // Read from file                
                 if (hubFile[txBuffer[1]]) {
                     // Read chunk from file
                     espLen = 0;
                     while (hubFile[txBuffer[1]].available() && tmp<txBuffer[2]) {
                         espBuffer[espLen++] = hubFile[txBuffer[1]].read();
                     }
-                    pushPacket(HUB_FIL_READ);
+                    pushPacket(HUB_FIL_READ, -1);
                 }
                 break;
 
             case HUB_FIL_WRITE:
-                // Close file                
                 if (hubFile[txBuffer[1]]) hubFile[txBuffer[1]].write(&txBuffer[2], txLen-3);
                 break;
 
             case HUB_FIL_CLOSE:
-                // Close file                
                 if (hubFile[txBuffer[1]]) hubFile[txBuffer[1]].close();
                 break;                          
               
             case HUB_UDP_OPEN:
-                // Send UDP init params to ESP
                 writeCMD(HUB_UDP_OPEN);
                 Serial3.write(txBuffer[1]); Serial3.write(txBuffer[2]);
                 Serial3.write(txBuffer[3]); Serial3.write(txBuffer[4]);
@@ -1434,11 +1439,14 @@ void loop() {
                 break;
 
             case HUB_UDP_SEND:
-                // Send UDP packet to ESP
                 writeCMD(HUB_UDP_SEND);
                 writeBuffer(&txBuffer[1], txLen-1);
                 break;
 
+            case HUB_UDP_CLOSE:
+                writeCMD(HUB_UDP_CLOSE);
+                break;
+                
             case HUB_TCP_OPEN:
                 // Send TCP init params to ESP
                 writeCMD(HUB_TCP_OPEN);
@@ -1452,7 +1460,38 @@ void loop() {
                 writeCMD(HUB_TCP_SEND);
                 writeBuffer(&txBuffer[1], txLen-1);
                 break;
-            }            
+
+            case HUB_TCP_CLOSE:
+                writeCMD(HUB_TCP_CLOSE);
+                break;
+
+            case HUB_SRV_OPEN:
+                // Send SRV init params to ESP
+                writeCMD(HUB_SRV_OPEN);
+                writeInt(txBuffer[1]+256*txBuffer[2]); // Port
+                writeInt(txBuffer[3]+256*txBuffer[4]); // TimeOut
+                break; 
+
+            case HUB_SRV_HEADER:
+                // Send TCP packet to ESP
+                writeCMD(HUB_SRV_HEADER);
+                break;
+
+            case HUB_SRV_BODY:
+                // Send TCP packet to ESP
+                writeCMD(HUB_SRV_BODY);
+                writeBuffer(&txBuffer[1], txLen-1);                 
+                break;
+
+            case HUB_SRV_FOOTER:
+                // Send TCP packet to ESP
+                writeCMD(HUB_SRV_FOOTER);
+                break;
+                
+            case HUB_SRV_CLOSE:
+                writeCMD(HUB_SRV_CLOSE);
+                break;    
+            }                                             
         }
 
         // Report communication
