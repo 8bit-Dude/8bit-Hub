@@ -1,10 +1,14 @@
 
 // System libraries
 #include <ESP8266WiFi.h>
+#include <ESP8266HTTPClient.h>
 #include <ESP8266httpUpdate.h>
 #include <WiFiClient.h>
 #include <WiFiUdp.h>
 #include <ps2mouse.h>
+
+// Firmware Version
+char espVersion[] = "v0.1";
 
 // HUB Commands
 #define HUB_SYS_RESET     1
@@ -27,12 +31,12 @@
 #define HUB_TCP_SEND     42
 #define HUB_TCP_CLOSE    43
 #define HUB_TCP_SLOT     44
-#define HUB_SRV_OPEN     50
-#define HUB_SRV_RECV     51
-#define HUB_SRV_HEADER   52
-#define HUB_SRV_BODY     53
-#define HUB_SRV_FOOTER   54
-#define HUB_SRV_CLOSE    55
+#define HUB_WEB_OPEN     50
+#define HUB_WEB_RECV     51
+#define HUB_WEB_HEADER   52
+#define HUB_WEB_BODY     53
+#define HUB_WEB_FOOTER   54
+#define HUB_WEB_CLOSE    55
 #define HUB_ESP_CONNECT 100
 #define HUB_ESP_NOTIF   101
 #define HUB_ESP_ERROR   112
@@ -46,8 +50,6 @@
 #define SLOTS    16     // Number of connection handles
 #define PACKET   1024   // Max. packet length (bytes)
 
-char version[] = "ESP version 001";
-
 // Wifi connection params
 char ssid[32], pswd[64];
 
@@ -59,12 +61,17 @@ IPAddress tcpIp[SLOTS];
 IPAddress udpIp[SLOTS];
 unsigned int tcpPort[SLOTS];
 unsigned int udpPort[SLOTS];
-unsigned int srvPort;
+unsigned int webPort;
 WiFiClient tcp[SLOTS];
 WiFiUDP    udp[SLOTS];
-WiFiServer srv(80); WiFiClient cli; // Web server/client pair
+WiFiServer webServer(80); 
+WiFiClient webClient;
 char udpSlot=0, tcpSlot=0;
-uint32_t timeout, srvTimeout;
+uint32_t webTimer, webTimeout;
+
+// Updater Related globals
+HTTPClient httpClient;
+WiFiClient updateClient;
 
 // Mouse Setting
 PS2Mouse mouse;
@@ -162,47 +169,47 @@ void tcpClose(unsigned char slot) {
 }
 
 ////////////////////////////
-//      SRV functions     //
+//      WEB functions     //
 ////////////////////////////
 
-void srvOpen() {            
-    readInt(&srvPort); 
-    readInt(&srvTimeout);
-    srv.begin(srvPort);
+void webOpen() {            
+    readInt(&webPort); 
+    readInt(&webTimeout);
+    webServer.begin(webPort);
     reply(HUB_ESP_NOTIF, "Server Started");
 }
 
-void srvReceive() {
+void webReceive() {
     // Check if client is currently alive
-    if (cli) {
-        if (millis()<timeout) {
+    if (webClient) {
+        if (millis()<webTimer) {
             return;
         } else {
-            cli.stop();
+            webClient.stop();
         }
     }
 
     // Check if someone else came along...
-    cli = srv.available();
-    if (cli) {
+    webClient = webServer.available();
+    if (webClient) {
         // Setup request reader
         char currentLine[256];
         unsigned char currentLen = 0;
         megaLen = 0;
 
         // Parse request
-        timeout = millis()+srvTimeout;          // set overall time-out
-        while (cli.connected() && millis() < timeout) {
-            if (cli.available()) {  
+        webTimer = millis()+webTimeout;          // set overall time-out
+        while (webClient.connected() && millis() < webTimer) {
+            if (webClient.available()) {  
                 // Retrieve incoming message byte-by-byte
-                char c = cli.read();             // read a byte, then
+                char c = webClient.read();             // read a byte, then
                 if (c == '\n') {                 // check if it is a newline character...
                     // if the current line is blank, you got two newline characters in a row.
                     // that's the end of the client HTTP request, so forward request
                     if (megaLen) {
                         // Send data to mega        
                         Serial.print("CMD");
-                        Serial.write(HUB_SRV_RECV);
+                        Serial.write(HUB_WEB_RECV);
                         writeBuffer(megaBuffer, megaLen);
                         return;                       // return to main loop
                     } else {
@@ -222,28 +229,28 @@ void srvReceive() {
         }
 
         // Could not process request within time-out...
-        cli.stop();
+        webClient.stop();
     }
 }
 
-void srvHeader() {
-    if (cli) cli.write("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n");
+void webHeader() {
+    if (webClient) webClient.write("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n");
 }
 
-void srvBody() {       
+void webBody() {       
     megaLen = readBuffer(megaBuffer);
-    if (cli) cli.write(megaBuffer, megaLen);
+    if (webClient) webClient.write(megaBuffer, megaLen);
 }
 
-void srvFooter() {
-    if (cli) {
-        cli.write("\r\n\r\n");
-        cli.stop();
+void webFooter() {
+    if (webClient) {
+        webClient.write("\r\n\r\n");
+        webClient.stop();
     }
 }
 
-void srvClose() {         
-    srv.stop();
+void webClose() {         
+    webServer.stop();
     reply(HUB_ESP_NOTIF, "Server Stopped");
 }
 
@@ -326,11 +333,60 @@ void wifiScan() {
     reply(HUB_ESP_NOTIF, megaBuffer);  
 }
 
+void updateESP() {
+    // Fetch version number from update server
+    char svrVersion[16] = "";
+    if (httpClient.begin(updateClient, "http://8bit-unity.com/Hub-ESP8266.ver")) {
+        int httpCode = httpClient.GET();
+        if (httpCode == HTTP_CODE_OK) {
+            int len = httpClient.getSize();
+             WiFiClient *stream = &updateClient;
+             stream->readBytes(svrVersion, std::min((size_t)len, sizeof(svrVersion)));
+        }
+        httpClient.end();        
+    }
+
+    // Check if we got a version number
+    if (!svrVersion[0]) {
+        reply(HUB_ESP_NOTIF, "Server not responding");
+        return;
+    }
+
+    // Check if latest version is newer?
+    char message[64] = "";
+    if (!strncmp(espVersion, svrVersion, 4)) {
+        reply(HUB_ESP_NOTIF, "Already up-to-date");
+        return;
+    } else {
+        sprintf(message, "Downloading %s...", svrVersion);
+        reply(HUB_ESP_NOTIF, message);
+    }
+
+    // Attempt to download update and flash ESP
+    ESPhttpUpdate.rebootOnUpdate(false);
+    t_httpUpdate_return ret = ESPhttpUpdate.update("http://8bit-unity.com/Hub-ESP8266.bin");
+    switch(ret) {
+    case HTTP_UPDATE_FAILED:
+        sprintf(message, "Update failed (%d)", ESPhttpUpdate.getLastError());
+        reply(HUB_ESP_NOTIF, message);
+        break;                
+    case HTTP_UPDATE_NO_UPDATES:
+        reply(HUB_ESP_NOTIF, "No update available");
+        break;                
+    case HTTP_UPDATE_OK:
+        reply(HUB_ESP_NOTIF, "Update complete");
+        break;  
+   default:
+        reply(HUB_ESP_NOTIF, "Update error");
+        break;
+    }    
+}
+
 ////////////////////////////////
 //       ESP8266 Routines     //
 ////////////////////////////////
 
-void setup(void) {     
+void setup(void) {
     // Setup serial port
     Serial.begin(115200);
     while (!Serial) ;
@@ -346,14 +402,13 @@ void loop(void) {
     }
     
     // Check commands from MEGA
-    t_httpUpdate_return ret;
     char cmd;
     if (Serial.find("CMD")) {
         cmd = readChar();
         switch (cmd) {
           
           case HUB_ESP_VERSION:
-            reply(HUB_ESP_NOTIF, version); 
+            reply(HUB_ESP_NOTIF, espVersion); 
             break;
           
           case HUB_ESP_CONNECT:
@@ -378,19 +433,7 @@ void loop(void) {
             break;
 
           case HUB_ESP_UPDATE:
-            ESPhttpUpdate.rebootOnUpdate(false);
-            ret = ESPhttpUpdate.update("http://8bit-unity.com/hub-esp8266.bin");
-            switch(ret) {
-            case HTTP_UPDATE_FAILED:
-                reply(HUB_ESP_NOTIF, "Update failed");
-                break;                
-            case HTTP_UPDATE_NO_UPDATES:
-                reply(HUB_ESP_NOTIF, "No update available");
-                break;                
-            case HTTP_UPDATE_OK:
-                reply(HUB_ESP_NOTIF, "Update completed");
-                break;  
-            }              
+            updateESP();          
             break;
 
           case HUB_UDP_SLOT:
@@ -425,24 +468,24 @@ void loop(void) {
             tcpClose(tcpSlot);
             break;
 
-          case HUB_SRV_OPEN:
-            srvOpen();
+          case HUB_WEB_OPEN:
+            webOpen();
             break;  
 
-          case HUB_SRV_HEADER:
-            srvHeader();
+          case HUB_WEB_HEADER:
+            webHeader();
             break;  
                         
-          case HUB_SRV_BODY:
-            srvBody();
+          case HUB_WEB_BODY:
+            webBody();
             break;  
                         
-          case HUB_SRV_FOOTER:
-            srvFooter();
+          case HUB_WEB_FOOTER:
+            webFooter();
             break;  
                         
-          case HUB_SRV_CLOSE:
-            srvClose();
+          case HUB_WEB_CLOSE:
+            webClose();
             break;  
             
           default:
@@ -453,7 +496,7 @@ void loop(void) {
     // Check UDP/TCP slots and Server
     for (byte slot=0; slot<SLOTS; slot++) udpReceive(slot);
     for (byte slot=0; slot<SLOTS; slot++) tcpReceive(slot);
-    srvReceive();
+    webReceive();
     
     // Read Mouse State
     if (mousePeriod && (millis()-mouseTimer > mousePeriod) && mouse.update()) {
@@ -465,18 +508,3 @@ void loop(void) {
         Serial.write(mouse.y);
     }
 }
-
-/*
-void getBoardInfo() {
-  Serial.println("ESP8266 board info:");
-  Serial.print("\tChip ID: ");          Serial.println(ESP.getFlashChipId());
-  Serial.print("\tCore Version: ");     Serial.println(ESP.getCoreVersion());
-  Serial.print("\tChip Real Size: ");   Serial.println(ESP.getFlashChipRealSize());
-  Serial.print("\tChip Flash Size: ");  Serial.println(ESP.getFlashChipSize());
-  Serial.print("\tChip Flash Speed: "); Serial.println(ESP.getFlashChipSpeed());
-  Serial.print("\tChip Speed: ");       Serial.println(ESP.getCpuFreqMHz());
-  Serial.print("\tChip Mode: ");        Serial.println(ESP.getFlashChipMode());
-  Serial.print("\tSketch Size: ");      Serial.println(ESP.getSketchSize());
-  Serial.print("\tSketch Free Space: ");Serial.println(ESP.getFreeSketchSpace());
-}
-*/

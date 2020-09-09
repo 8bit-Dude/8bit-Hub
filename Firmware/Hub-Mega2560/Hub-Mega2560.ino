@@ -5,6 +5,9 @@
 #include <SPI.h>
 #include <SD.h>
 
+// Firmware Version
+char megaVersion[] = "v0.1";
+
 // Debugging
 //#define __DEBUG_JOY__
 //#define __DEBUG_JPG__
@@ -14,15 +17,11 @@
 //#define __DEBUG_PCK__
 //#define __DEBUG_TCP__
 //#define __DEBUG_UDP__
-//#define __DEBUG_SRV__
+//#define __DEBUG_WEB__
 
 // Useful macros
 #define MIN(a,b) (a>b ? b : a)
 #define MAX(a,b) (a>b ? a : b)
-
-// Firmware Version
-#define HUB_VERSION 1
-#define HUB_MODES   7
 
 // HUB Modes
 #define MODE_C64   0
@@ -32,13 +31,14 @@
 #define MODE_LYNX  4
 #define MODE_NES   5
 #define MODE_BBC   6
+#define HUB_MODES  7
 const char* modeString[HUB_MODES] = {"C64/C128", "Atari XL/XE", "Apple //", "Oric", "Lynx", "NES", "BBC"};
 byte hubMode = MODE_LYNX; 
 
 // COMM Params
 #define FILES    16    // Number of file handles
 #define SLOTS    16    // Number of connection handles
-#define PACKET   512   // Max. packet length (bytes)
+#define PACKET   256   // Max. packet length (bytes)
 #define TIMEOUT  1000  // Packet timout (milliseconds)
 
 // HUB Commands
@@ -47,11 +47,11 @@ byte hubMode = MODE_LYNX;
 #define HUB_DIR_MK       11
 #define HUB_DIR_RM       12
 #define HUB_DIR_CD       13
-#define HUB_FIL_OPEN     20
-#define HUB_FIL_SEEK     21
-#define HUB_FIL_READ     22
-#define HUB_FIL_WRITE    23
-#define HUB_FIL_CLOSE    24
+#define HUB_FIL_OPEN     21
+#define HUB_FIL_SEEK     22
+#define HUB_FIL_READ     23
+#define HUB_FIL_WRITE    24
+#define HUB_FIL_CLOSE    25
 #define HUB_UDP_OPEN     30
 #define HUB_UDP_RECV     31
 #define HUB_UDP_SEND     32
@@ -62,12 +62,12 @@ byte hubMode = MODE_LYNX;
 #define HUB_TCP_SEND     42
 #define HUB_TCP_CLOSE    43
 #define HUB_TCP_SLOT     44
-#define HUB_SRV_OPEN     50
-#define HUB_SRV_RECV     51
-#define HUB_SRV_HEADER   52
-#define HUB_SRV_BODY     53
-#define HUB_SRV_FOOTER   54
-#define HUB_SRV_CLOSE    55
+#define HUB_WEB_OPEN     50
+#define HUB_WEB_RECV     51
+#define HUB_WEB_HEADER   52
+#define HUB_WEB_BODY     53
+#define HUB_WEB_FOOTER   54
+#define HUB_WEB_CLOSE    55
 #define HUB_ESP_CONNECT 100
 #define HUB_ESP_NOTIF   101
 #define HUB_ESP_ERROR   112
@@ -83,7 +83,7 @@ byte hubMode = MODE_LYNX;
                              "FIL_OPEN","FIL_SEEK","FIL_READ","FIL_WRITE","FILE_CLOSE","","","","","",
                              "UDP_OPEN","UDP_RECV","UDP_SEND","UDP_CLOSE","UDP_SLOT","","","","","",
                              "TCP_OPEN","TCP_RECV","TCP_SEND","TCP_CLOSE","TCP_SLOT","","","","","",
-                             "SRV_OPEN","SRV_RECV","SRV_HEADER","SRV_BODY","SRV_FOOTER","SRV_CLOSE","","","",""};
+                             "WEB_OPEN","WEB_RECV","WEB_HEADER","WEB_BODY","WEB_FOOTER","WEB_CLOSE","","","",""};
 #endif
 
 // SD Card Paramds
@@ -791,12 +791,12 @@ void readTcp() {
     } 
 }
 
-void readSrv() {
+void readWeb() {
     // Store data into packet
     if (readBuffer()) {
-        pushPacket(HUB_SRV_RECV, -1);  
-    #if defined(__DEBUG_SRV__)
-        Serial.print("SRV RECV: ");
+        pushPacket(HUB_WEB_RECV, -1);  
+    #if defined(__DEBUG_WEB__)
+        Serial.print("WEB RECV: ");
         Serial.write(espBuffer, espLen); 
         Serial.print("\n");
     #endif     
@@ -1343,8 +1343,8 @@ void loop() {
             readTcp();
             break;            
 
-        case HUB_SRV_RECV:
-            readSrv();
+        case HUB_WEB_RECV:
+            readWeb();
             break;                        
         }
     }
@@ -1465,31 +1465,31 @@ void loop() {
                 writeCMD(HUB_TCP_CLOSE);
                 break;
 
-            case HUB_SRV_OPEN:
-                // Send SRV init params to ESP
-                writeCMD(HUB_SRV_OPEN);
+            case HUB_WEB_OPEN:
+                // Send WEB init params to ESP
+                writeCMD(HUB_WEB_OPEN);
                 writeInt(txBuffer[1]+256*txBuffer[2]); // Port
                 writeInt(txBuffer[3]+256*txBuffer[4]); // TimeOut
                 break; 
 
-            case HUB_SRV_HEADER:
+            case HUB_WEB_HEADER:
                 // Send TCP packet to ESP
-                writeCMD(HUB_SRV_HEADER);
+                writeCMD(HUB_WEB_HEADER);
                 break;
 
-            case HUB_SRV_BODY:
+            case HUB_WEB_BODY:
                 // Send TCP packet to ESP
-                writeCMD(HUB_SRV_BODY);
+                writeCMD(HUB_WEB_BODY);
                 writeBuffer(&txBuffer[1], txLen-1);                 
                 break;
 
-            case HUB_SRV_FOOTER:
+            case HUB_WEB_FOOTER:
                 // Send TCP packet to ESP
-                writeCMD(HUB_SRV_FOOTER);
+                writeCMD(HUB_WEB_FOOTER);
                 break;
                 
-            case HUB_SRV_CLOSE:
-                writeCMD(HUB_SRV_CLOSE);
+            case HUB_WEB_CLOSE:
+                writeCMD(HUB_WEB_CLOSE);
                 break;    
             }                                             
         }
