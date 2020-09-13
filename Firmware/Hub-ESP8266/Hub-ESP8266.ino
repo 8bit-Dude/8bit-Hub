@@ -1,11 +1,12 @@
 
 // System libraries
+#include <ps2mouse.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
 #include <ESP8266httpUpdate.h>
 #include <WiFiClient.h>
 #include <WiFiUdp.h>
-#include <ps2mouse.h>
+#include <FS.h>
 
 // Firmware Version
 char espVersion[] = "v0.1";
@@ -35,11 +36,13 @@ char espVersion[] = "v0.1";
 #define HUB_WEB_RECV     51
 #define HUB_WEB_HEADER   52
 #define HUB_WEB_BODY     53
-#define HUB_WEB_FOOTER   54
+#define HUB_WEB_SEND     54
 #define HUB_WEB_CLOSE    55
+#define HUB_HTTP_GET     60
+#define HUB_HTTP_READ    61
 #define HUB_ESP_CONNECT 100
 #define HUB_ESP_NOTIF   101
-#define HUB_ESP_ERROR   112
+#define HUB_ESP_ERROR   102
 #define HUB_ESP_IP      103
 #define HUB_ESP_MOUSE   104
 #define HUB_ESP_SCAN    105
@@ -47,8 +50,8 @@ char espVersion[] = "v0.1";
 #define HUB_ESP_VERSION 107
 
 // ESP Params
-#define SLOTS    16     // Number of connection handles
-#define PACKET   1024   // Max. packet length (bytes)
+#define SLOTS    16     // Number of tcp/udp handles
+#define PACKET   256    // Max. packet length (bytes)
 
 // Wifi connection params
 char ssid[32], pswd[64];
@@ -66,11 +69,11 @@ WiFiClient tcp[SLOTS];
 WiFiUDP    udp[SLOTS];
 WiFiServer webServer(80); 
 WiFiClient webClient;
+HTTPClient httpClient;
 char udpSlot=0, tcpSlot=0;
 uint32_t webTimer, webTimeout;
 
 // Updater Related globals
-HTTPClient httpClient;
 WiFiClient updateClient;
 
 // Mouse Setting
@@ -105,9 +108,9 @@ void udpReceive(unsigned char slot) {
         // Read data from UDP
         megaLen = udp[slot].read(megaBuffer, PACKET-1);
         megaBuffer[megaLen] = 0;
+        
         // Send it to mega        
-        Serial.print("CMD");
-        Serial.write(HUB_UDP_RECV);    
+        writeCMD(HUB_UDP_RECV);    
         Serial.write(slot); 
         writeBuffer(megaBuffer, megaLen);         
     }
@@ -122,7 +125,7 @@ void udpSend(unsigned char slot) {
 
 void udpClose(unsigned char slot) {
     udp[slot].stop();
-    reply(HUB_ESP_NOTIF, "UDP Port Closed");
+    reply(HUB_ESP_NOTIF, "UDP port closed");
 }
 
 ////////////////////////////
@@ -139,9 +142,9 @@ void tcpOpen(unsigned char slot) {
 
     // Open TCP connection
     if (tcp[slot].connect(tcpIp[slot], tcpPort[slot])) {
-        reply(HUB_ESP_NOTIF, "TCP Connection Opened");
+        reply(HUB_ESP_NOTIF, "TCP connection opened");
     } else {
-        reply(HUB_ESP_ERROR, "TCP Connection Failed");
+        reply(HUB_ESP_ERROR, "TCP connection failed");
     }
 }
 
@@ -150,9 +153,9 @@ void tcpReceive(unsigned char slot) {
        // Read data from TCP
         megaLen = tcp[slot].read((unsigned char*)megaBuffer, PACKET-1);
         megaBuffer[megaLen] = 0;
+        
         // Send it to mega        
-        Serial.print("CMD");
-        Serial.write(HUB_TCP_RECV);    
+        writeCMD(HUB_TCP_RECV);    
         Serial.write(slot); 
         writeBuffer(megaBuffer, megaLen);                 
     }
@@ -165,7 +168,7 @@ void tcpSend(unsigned char slot) {
 
 void tcpClose(unsigned char slot) {
     tcp[slot].stop(); 
-    reply(HUB_ESP_NOTIF, "TCP Connection Closed");
+    reply(HUB_ESP_NOTIF, "TCP connection closed");
 }
 
 ////////////////////////////
@@ -176,21 +179,22 @@ void webOpen() {
     readInt(&webPort); 
     readInt(&webTimeout);
     webServer.begin(webPort);
-    reply(HUB_ESP_NOTIF, "Server Started");
+    reply(HUB_ESP_NOTIF, "Web server started");
 }
 
 void webReceive() {
     // Check if client is currently alive
     if (webClient) {
-        if (millis()<webTimer) {
-            return;
-        } else {
+        // Check time-out        
+        if (millis()>webTimer) 
             webClient.stop();
-        }
+    } else {
+        // Check if someone else came along...
+        webClient = webServer.available();
+        if (webClient) 
+            webTimer = millis()+webTimeout;   // set overall time-out
     }
-
-    // Check if someone else came along...
-    webClient = webServer.available();
+    
     if (webClient) {
         // Setup request reader
         char currentLine[256];
@@ -198,43 +202,37 @@ void webReceive() {
         megaLen = 0;
 
         // Parse request
-        webTimer = millis()+webTimeout;          // set overall time-out
-        while (webClient.connected() && millis() < webTimer) {
-            if (webClient.available()) {  
-                // Retrieve incoming message byte-by-byte
-                char c = webClient.read();             // read a byte, then
-                if (c == '\n') {                 // check if it is a newline character...
-                    // if the current line is blank, you got two newline characters in a row.
-                    // that's the end of the client HTTP request, so forward request
-                    if (megaLen) {
-                        // Send data to mega        
-                        Serial.print("CMD");
-                        Serial.write(HUB_WEB_RECV);
-                        writeBuffer(megaBuffer, megaLen);
-                        return;                       // return to main loop
-                    } else {
-                        // only keep the HTTP command
-                        if (!strncmp(currentLine, "GET", 3)) {
-                            megaLen = currentLen;
-                            for (byte i=0; i<currentLen; i++) { 
-                                megaBuffer[i] = currentLine[i];
-                            }
-                        }
-                        currentLen = 0;                           
-                    }
-                } else if (c != '\r') {  // if you got anything else but a carriage return character,
-                    currentLine[currentLen++] = c;      // add it to the end of the currentLine
-                }             
-            }
+        while (webClient.available() && millis() < webTimer) {
+            // Retrieve incoming message byte-by-byte
+            char c = webClient.read();  // read a byte, then
+            if (c == '\n') {            // check if it is a newline character...
+                // Did we find the GET ... line?
+                if (!strncmp(currentLine, "GET", 3)) {
+                    // Transfer line to buffer
+                    megaLen = currentLen;
+                    for (byte i=0; i<currentLen; i++)
+                        megaBuffer[i] = currentLine[i];
+                    
+                    // And send to mega        
+                    writeCMD(HUB_WEB_RECV);
+                    writeBuffer(megaBuffer, megaLen);
+                    return;                   
+                }
+                currentLen = 0;               
+            } else if (c != '\r') {  // if you got anything else but a carriage return character,
+                currentLine[currentLen++] = c;      // add it to the end of the currentLine
+            }             
         }
-
-        // Could not process request within time-out...
-        webClient.stop();
     }
 }
 
 void webHeader() {
-    if (webClient) webClient.write("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n");
+    megaLen = readBuffer(megaBuffer);
+    if (webClient) {
+        webClient.write("HTTP/1.1 200 OK\r\nConnection: close\r\n");
+        webClient.write(megaBuffer, megaLen);
+        webClient.write("\r\n\r\n");
+    }
 }
 
 void webBody() {       
@@ -242,7 +240,7 @@ void webBody() {
     if (webClient) webClient.write(megaBuffer, megaLen);
 }
 
-void webFooter() {
+void webSend() {
     if (webClient) {
         webClient.write("\r\n\r\n");
         webClient.stop();
@@ -251,12 +249,76 @@ void webFooter() {
 
 void webClose() {         
     webServer.stop();
-    reply(HUB_ESP_NOTIF, "Server Stopped");
+    reply(HUB_ESP_NOTIF, "Web server stopped");
+}
+
+////////////////////////////
+//     HTTP functions     //
+////////////////////////////
+
+File httpFile; 
+
+void httpGet() {
+    // Check if http file handle still open?
+    if (httpFile) httpFile.close();
+  
+    // Stream file to flash file system
+    unsigned long httpSize;
+    megaLen = readBuffer(megaBuffer);
+    httpFile = SPIFFS.open("/http.tmp", "w");
+    if (httpFile) {
+        if (httpClient.begin(megaBuffer)) {
+            if (httpClient.GET() == HTTP_CODE_OK) {
+                httpClient.writeToStream(&httpFile);
+            } else {
+                reply(HUB_ESP_ERROR, "HTTP: url not found!");
+                return;        
+            }
+            httpClient.end();
+        } else {
+            reply(HUB_ESP_ERROR, "HTTP: cannot connect!");
+            return;
+        }
+        httpFile.close();
+    } else {
+        reply(HUB_ESP_ERROR, "HTTP: flash drive error!");
+        return;
+    }
+    
+    // Prepare file for reading
+    httpFile = SPIFFS.open("/http.tmp", "r");
+    httpSize = httpFile.size();
+
+    // Send back file size        
+    writeCMD(HUB_HTTP_GET);    
+    Serial.write(4);    
+    writeLong(httpSize);       
+}
+
+void httpRead() {
+    // Stream required number of bytes
+    megaLen = 0;
+    if (httpFile) {
+        // Read requested bytes, as long as there are any
+        unsigned char requestLen = readChar();
+        while (httpFile.available() && megaLen < requestLen) {
+            megaBuffer[megaLen++] = httpFile.read();
+        }
+    }
+    
+    // Send it to mega        
+    writeCMD(HUB_HTTP_READ);    
+    writeBuffer(megaBuffer, megaLen);   
 }
 
 ////////////////////////////////
 //      MEGA communication    //
 ////////////////////////////////
+
+void writeCMD(char cmd) {
+    Serial.print("CMD");
+    Serial.write(cmd);
+}
 
 void writeChar(unsigned char input) {
     Serial.write(input);
@@ -264,6 +326,10 @@ void writeChar(unsigned char input) {
 
 void writeInt(unsigned int input) {
     Serial.write((char*)&input, 2);
+}
+
+void writeLong(unsigned long input) {
+    Serial.write((char*)&input, 4);
 }
 
 void writeBuffer(char* buffer, char len) {
@@ -291,8 +357,7 @@ unsigned char readBuffer(char *buffer) {
 }
 
 void reply(unsigned char type, char *message) {
-    Serial.print("CMD");
-    Serial.write(type);    
+    writeCMD(type);    
     writeBuffer(message, strlen(message));  
 }
 
@@ -334,37 +399,13 @@ void wifiScan() {
 }
 
 void updateESP() {
-    // Fetch version number from update server
-    char svrVersion[16] = "";
-    if (httpClient.begin(updateClient, "http://8bit-unity.com/Hub-ESP8266.ver")) {
-        int httpCode = httpClient.GET();
-        if (httpCode == HTTP_CODE_OK) {
-            int len = httpClient.getSize();
-             WiFiClient *stream = &updateClient;
-             stream->readBytes(svrVersion, std::min((size_t)len, sizeof(svrVersion)));
-        }
-        httpClient.end();        
-    }
-
-    // Check if we got a version number
-    if (!svrVersion[0]) {
-        reply(HUB_ESP_NOTIF, "Server not responding");
-        return;
-    }
-
-    // Check if latest version is newer?
-    char message[64] = "";
-    if (!strncmp(espVersion, svrVersion, 4)) {
-        reply(HUB_ESP_NOTIF, "Already up-to-date");
-        return;
-    } else {
-        sprintf(message, "Downloading %s...", svrVersion);
-        reply(HUB_ESP_NOTIF, message);
-    }
-
     // Attempt to download update and flash ESP
     ESPhttpUpdate.rebootOnUpdate(false);
-    t_httpUpdate_return ret = ESPhttpUpdate.update("http://8bit-unity.com/Hub-ESP8266.bin");
+    megaLen = readBuffer(megaBuffer); megaBuffer[megaLen] = 0;
+    t_httpUpdate_return ret = ESPhttpUpdate.update(megaBuffer);
+
+    // Process result
+    char message[64] = "";
     switch(ret) {
     case HTTP_UPDATE_FAILED:
         sprintf(message, "Update failed (%d)", ESPhttpUpdate.getLastError());
@@ -379,7 +420,7 @@ void updateESP() {
    default:
         reply(HUB_ESP_NOTIF, "Update error");
         break;
-    }    
+    }
 }
 
 ////////////////////////////////
@@ -393,6 +434,9 @@ void setup(void) {
     Serial.setTimeout(10);
     Serial.flush();  
     Serial.readString();
+
+    // Mount Flash File System (for temporary storage of files)
+    SPIFFS.begin();
 }
 
 void loop(void) {
@@ -408,7 +452,8 @@ void loop(void) {
         switch (cmd) {
           
           case HUB_ESP_VERSION:
-            reply(HUB_ESP_NOTIF, espVersion); 
+            writeCMD(HUB_ESP_VERSION);
+            writeBuffer(espVersion, strlen(espVersion));
             break;
           
           case HUB_ESP_CONNECT:
@@ -480,14 +525,22 @@ void loop(void) {
             webBody();
             break;  
                         
-          case HUB_WEB_FOOTER:
-            webFooter();
+          case HUB_WEB_SEND:
+            webSend();
             break;  
                         
           case HUB_WEB_CLOSE:
             webClose();
             break;  
-            
+
+          case HUB_HTTP_GET:
+            httpGet();
+            break;
+
+          case HUB_HTTP_READ:
+            httpRead();
+            break;
+
           default:
             reply(HUB_ESP_ERROR, "CMD unknown");
         }
@@ -501,8 +554,7 @@ void loop(void) {
     // Read Mouse State
     if (mousePeriod && (millis()-mouseTimer > mousePeriod) && mouse.update()) {
         mouseTimer = millis();
-        Serial.print("CMD");
-        Serial.write(HUB_ESP_MOUSE);
+        writeCMD(HUB_ESP_MOUSE);
         Serial.write(mouse.status);
         Serial.write(mouse.x);
         Serial.write(mouse.y);

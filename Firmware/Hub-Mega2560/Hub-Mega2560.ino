@@ -1,12 +1,19 @@
 
 // System libraries
+#include <ArduinoOTA.h>
 #include <EEPROM.h>
-#include <MD5.h>
+#include <LiquidCrystal_I2C.h>
+#include <picojpeg.h>
 #include <SPI.h>
 #include <SD.h>
 
 // Firmware Version
-char megaVersion[] = "v0.1";
+char espVersion[5] = "?";
+char megaVersion[5] = "v0.1";
+char updateVersion[5] = "?";
+char urlEsp[]  = "http://8bit-unity.com/Hub-ESP8266.bin";
+char urlMega[] = "http://8bit-unity.com/Hub-Mega2560.bin";
+char urlVer[]  = "http://8bit-unity.com/Hub.ver";
 
 // Debugging
 //#define __DEBUG_JOY__
@@ -18,6 +25,7 @@ char megaVersion[] = "v0.1";
 //#define __DEBUG_TCP__
 //#define __DEBUG_UDP__
 //#define __DEBUG_WEB__
+#define __DEBUG_HTTP__
 
 // Useful macros
 #define MIN(a,b) (a>b ? b : a)
@@ -33,7 +41,7 @@ char megaVersion[] = "v0.1";
 #define MODE_BBC   6
 #define HUB_MODES  7
 const char* modeString[HUB_MODES] = {"C64/C128", "Atari XL/XE", "Apple //", "Oric", "Lynx", "NES", "BBC"};
-byte hubMode = MODE_LYNX; 
+byte hubMode = MODE_LYNX;
 
 // COMM Params
 #define FILES    16    // Number of file handles
@@ -66,11 +74,13 @@ byte hubMode = MODE_LYNX;
 #define HUB_WEB_RECV     51
 #define HUB_WEB_HEADER   52
 #define HUB_WEB_BODY     53
-#define HUB_WEB_FOOTER   54
+#define HUB_WEB_SEND     54
 #define HUB_WEB_CLOSE    55
+#define HUB_HTTP_GET     60
+#define HUB_HTTP_READ    61
 #define HUB_ESP_CONNECT 100
 #define HUB_ESP_NOTIF   101
-#define HUB_ESP_ERROR   112
+#define HUB_ESP_ERROR   102
 #define HUB_ESP_IP      103
 #define HUB_ESP_MOUSE   104
 #define HUB_ESP_SCAN    105
@@ -454,8 +464,6 @@ unsigned char lynxRecvPacket() {
 //        JPG functions       //
 ////////////////////////////////
 
-#include "picojpeg.h"
-
 const unsigned char lynxPaletteR[] = {165,  66,  66,  49,  49,  33,  33, 115, 231, 247, 247, 214, 132, 247, 132, 0};
 const unsigned char lynxPaletteG[] = { 16,  49, 132, 198, 198, 132,  82,  82, 115, 231, 148,  49,  33, 247, 132, 0};
 const unsigned char lynxPaletteB[] = {198, 181, 198, 198,  82,  33,  82,  33,  82,   0, 165,  66,  66, 247, 132, 0};
@@ -637,7 +645,6 @@ void setupSD() {
 //        LCD functions       //
 ////////////////////////////////
 
-#include <LiquidCrystal_I2C.h>
 LiquidCrystal_I2C lcd(0x27,2,1,0,4,5,6,7);
 
 void setupLCD() {
@@ -710,13 +717,15 @@ void writeCMD(char cmd) {
     Serial3.write(cmd);
 }
 
+void writeChar(unsigned char var) {
+    Serial3.write(var);
+}
+
 void writeInt(unsigned int var) {
-    // Write int
     Serial3.write((char*)&var, 2);
 }
 
 void writeBuffer(char* buffer, char len) {
-    // Write buffer of known length
     Serial3.write(len);
     Serial3.write(buffer, len);
 }
@@ -803,23 +812,102 @@ void readWeb() {
     }   
 }
 
+#define HTTP_PACKET 0
+#define HTTP_UPDATE 1
+
+unsigned long httpSize;
+unsigned char httpTarget;
+
+void getHttp() {
+    // Store data into packet
+    if (readBuffer()) {
+        unsigned char len[4];
+        memcpy(len, espBuffer, 4);
+        httpSize = (unsigned long)len[0]+256L*(unsigned long)len[1]+65536L*(unsigned long)len[2]+16777216L*(unsigned long)len[3];
+        pushPacket(HUB_HTTP_GET, -1);  
+    #if defined(__DEBUG_HTTP__)
+        Serial.print("HTTP GET: ");
+        Serial.print(httpSize); Serial.println(" bytes");
+    #endif     
+    }
+}
+
+void readHttp() {
+    // Store data to Packet/OTA update
+    if (readBuffer()) {
+        switch (httpTarget) {
+        case HTTP_PACKET:
+            pushPacket(HUB_HTTP_READ, -1);  
+            break;
+        case HTTP_UPDATE:
+            for (unsigned char i=0; i<espLen; i++)
+                InternalStorage.write(espBuffer[i]);
+            break;
+        }
+    #if defined(__DEBUG_HTTP__)
+        Serial.print("HTTP READ: ");
+        Serial.print(espLen); Serial.println(" bytes");
+    #endif     
+    }
+}
+
+char lastCMD;
+
+void processCMD() {
+    lastCMD = readChar();
+#ifdef __DEBUG_CMD__
+    if (lastCMD<60) { Serial.print(cmdString[lastCMD]); Serial.print('\n'); }
+#endif
+    switch (lastCMD) {
+    case HUB_ESP_IP:
+        readIP();
+        displayIP();
+        break;
+        
+    case HUB_ESP_NOTIF:
+        readNotif();
+        break;
+        
+    case HUB_ESP_ERROR:
+        readError();
+        break;
+        
+    case HUB_ESP_MOUSE:
+        readMouse();
+        break;
+
+    case HUB_ESP_VERSION:
+        checkUpdate();
+        break;
+
+    case HUB_UDP_RECV:
+        readUdp();
+        break;
+
+    case HUB_TCP_RECV:
+        readTcp();
+        break;            
+
+    case HUB_WEB_RECV:
+        readWeb();
+        break;  
+
+    case HUB_HTTP_GET:
+        getHttp();
+        break;                                    
+
+    case HUB_HTTP_READ:
+        readHttp();
+        break;                                    
+    }  
+}
+
 ////////////////////////////////
 //       WIFI functions       //
 ////////////////////////////////
 
 char ssid[32];
 char pswd[64];
-
-void setupESP() {
-    // Connect Wifi
-    writeCMD(HUB_ESP_CONNECT);
-    writeBuffer(ssid, strlen(ssid));
-    writeBuffer(pswd, strlen(pswd));
-
-    // Start Mouse
-    writeCMD(HUB_ESP_MOUSE);
-    Serial3.write(100);   // Refresh period (ms)     
-}
 
 unsigned char wifiScan() {
     // Scan and wait for Answer
@@ -832,6 +920,111 @@ unsigned char wifiScan() {
         }
     }                
     return 0;       
+}
+
+void checkUpdate() {
+    // The online version was checked first
+    memcpy(updateVersion, espBuffer, espLen); updateVersion[4] = 0;
+    readBuffer();
+    memcpy(espVersion, espBuffer, espLen); espVersion[4] = 0;
+
+    // Display info
+    Serial.print("Firmware: ");
+    Serial.print(espVersion); Serial.print("(ESP), ");
+    Serial.print(megaVersion); Serial.print("(MEGA), ");
+    Serial.print(updateVersion); Serial.println("(UPATE)");
+
+    // Check updates
+    if (strncmp(updateVersion, "?", 1)) {
+        if (strncmp(megaVersion, updateVersion, 4)) {
+            // Fetch update file on ESP
+            Serial.println("Downloading MEGA update...");
+            writeCMD(HUB_HTTP_GET);
+            writeBuffer(urlMega, strlen(urlMega));
+            while (lastCMD != HUB_HTTP_GET)
+                if (Serial3.find("CMD")) processCMD();
+
+            // Check there is enough storage for update
+            if (!httpSize) {
+                Serial.print("Error: update not found.");
+                return;
+            }
+
+            // Check there is enough storage for update
+            if (!InternalStorage.open(httpSize)) {
+                Serial.print("Error: not enough space to store the update.");
+                return;
+            }
+
+            // Transfer update file to MEGA
+            uint32_t timeout = millis();
+            unsigned long recvSize = 0;
+            httpTarget = HTTP_UPDATE;
+            while (1) {
+                // Request next http packet
+                writeCMD(HUB_HTTP_READ);
+                writeChar(200);
+                delay(10);
+        
+                // Wait to receive packet
+                while (1) {
+                    if (Serial3.find("CMD"))
+                        processCMD();
+                    if (lastCMD == HUB_HTTP_READ) 
+                        break;
+                }
+
+                // Check if packet was empty
+                if (espLen)
+                    recvSize += espLen;
+                else
+                    break;
+            }
+            
+            // Close the internal storage
+            InternalStorage.close();
+            Serial.print("Received: ");
+            Serial.print(recvSize);
+            Serial.print("/");
+            Serial.print(httpSize);
+            Serial.println(" bytes");
+
+            // Apply update
+            Serial.println("Updating MEGA firmware...");
+            Serial.flush();
+            InternalStorage.apply();
+        }
+        if (strncmp(espVersion, "?", 1)) {
+            if (strncmp(espVersion, updateVersion, 4)) {
+                Serial.println("Updating ESP firmware...");
+                //writeCMD(HUB_ESP_UPDATE);
+            }
+        }
+    }
+}
+
+void setupESP() {
+    // Connect Wifi
+    //strcpy(ssid, "8bit-Unity"); 
+    strcpy(ssid, "NETGEAR95");
+    //strcpy(pswd, "0123456789");
+    strcpy(pswd, "fluffykayak536");
+    writeCMD(HUB_ESP_CONNECT);
+    writeBuffer(ssid, strlen(ssid));
+    writeBuffer(pswd, strlen(pswd));
+
+    // Start Mouse
+    writeCMD(HUB_ESP_MOUSE);
+    writeChar(100);   // Refresh period (ms)     
+
+    // Check Update version
+    writeCMD(HUB_HTTP_GET);
+    writeBuffer(urlVer, strlen(urlVer)); 
+    writeCMD(HUB_HTTP_READ);
+    writeChar(4);
+
+    // Check ESP version
+    writeCMD(HUB_ESP_VERSION);    
 }
 
 //////////////////////////
@@ -866,8 +1059,8 @@ void tcpTest() {
     lcd.setCursor(0,1);
     lcd.print("TCP:");
     writeCMD(HUB_TCP_OPEN);
-    Serial3.write(199); Serial3.write(47);
-    Serial3.write(196); Serial3.write(106);
+    writeChar(199); writeChar(47);
+    writeChar(196); writeChar(106);
     writeInt(1234);
     writeCMD(HUB_TCP_SEND);
     writeBuffer("Packet received", 16);
@@ -890,10 +1083,10 @@ void udpTest() {
     lcd.setCursor(0,2);
     lcd.print("UDP:");
     writeCMD(HUB_UDP_SLOT);
-    Serial3.write(0);
+    writeChar(0);
     writeCMD(HUB_UDP_OPEN);
-    Serial3.write(199); Serial3.write(47);
-    Serial3.write(196); Serial3.write(106);
+    writeChar(199); writeChar(47);
+    writeChar(196); writeChar(106);
     writeInt(1234); writeInt(4321);
     writeCMD(HUB_UDP_SEND);
     writeBuffer("Packet received", 16);
@@ -1311,45 +1504,10 @@ void loop() {
     // Check Joysticks states
     readJOY(); 
       
-    // Process replies from ESP8266
-    if (Serial3.find("CMD")) {
-        char cmd = readChar();
-    #ifdef __DEBUG_CMD__
-        if (cmd<60) { Serial.print(cmdString[cmd]); Serial.print('\n'); }
-    #endif
-        switch (cmd) {
-        case HUB_ESP_IP:
-            readIP();
-            displayIP();
-            break;
-            
-        case HUB_ESP_NOTIF:
-            readNotif();
-            break;
-            
-        case HUB_ESP_ERROR:
-            readError();
-            break;
-            
-        case HUB_ESP_MOUSE:
-            readMouse();
-            break;
+    // Process commands from ESP8266
+    if (Serial3.find("CMD")) processCMD();
 
-        case HUB_UDP_RECV:
-            readUdp();
-            break;
-
-        case HUB_TCP_RECV:
-            readTcp();
-            break;            
-
-        case HUB_WEB_RECV:
-            readWeb();
-            break;                        
-        }
-    }
-
-    // Process com. with host device
+    // Send COM data
     byte code = COMM_ERR_NODATA;
     long time1 = micros();
     switch (hubMode) {
@@ -1365,7 +1523,7 @@ void loop() {
         break;
     }
 
-    // Process received data
+    // Process received COM data
     if (code != COMM_ERR_NODATA) {        
         unsigned char tmp;
         unsigned int offset;        
@@ -1432,8 +1590,8 @@ void loop() {
               
             case HUB_UDP_OPEN:
                 writeCMD(HUB_UDP_OPEN);
-                Serial3.write(txBuffer[1]); Serial3.write(txBuffer[2]);
-                Serial3.write(txBuffer[3]); Serial3.write(txBuffer[4]);
+                writeChar(txBuffer[1]); writeChar(txBuffer[2]);
+                writeChar(txBuffer[3]); writeChar(txBuffer[4]);
                 writeInt(txBuffer[5]+256*txBuffer[6]); 
                 writeInt(txBuffer[7]+256*txBuffer[8]);
                 break;
@@ -1450,8 +1608,8 @@ void loop() {
             case HUB_TCP_OPEN:
                 // Send TCP init params to ESP
                 writeCMD(HUB_TCP_OPEN);
-                Serial3.write(txBuffer[1]); Serial3.write(txBuffer[2]);
-                Serial3.write(txBuffer[3]); Serial3.write(txBuffer[4]);
+                writeChar(txBuffer[1]); writeChar(txBuffer[2]);
+                writeChar(txBuffer[3]); writeChar(txBuffer[4]);
                 writeInt(txBuffer[5]+256*txBuffer[6]); 
                 break;
 
@@ -1475,6 +1633,7 @@ void loop() {
             case HUB_WEB_HEADER:
                 // Send TCP packet to ESP
                 writeCMD(HUB_WEB_HEADER);
+                writeBuffer(&txBuffer[1], txLen-1);                 
                 break;
 
             case HUB_WEB_BODY:
@@ -1483,9 +1642,9 @@ void loop() {
                 writeBuffer(&txBuffer[1], txLen-1);                 
                 break;
 
-            case HUB_WEB_FOOTER:
+            case HUB_WEB_SEND:
                 // Send TCP packet to ESP
-                writeCMD(HUB_WEB_FOOTER);
+                writeCMD(HUB_WEB_SEND);
                 break;
                 
             case HUB_WEB_CLOSE:
