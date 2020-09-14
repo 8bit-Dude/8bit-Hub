@@ -1,27 +1,35 @@
 
 // System libraries
+#include <FS.h>
 #include <ps2mouse.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266HTTPClient.h>
 #include <ESP8266httpUpdate.h>
 #include <WiFiClient.h>
 #include <WiFiUdp.h>
-#include <FS.h>
 
 // Firmware Version
 char espVersion[] = "v0.1";
 
 // HUB Commands
+#define HUB_SYS_ERROR     0
 #define HUB_SYS_RESET     1
+#define HUB_SYS_NOTIF     2
+#define HUB_SYS_SCAN      3
+#define HUB_SYS_CONNECT   4
+#define HUB_SYS_IP        5
+#define HUB_SYS_MOUSE     6
+#define HUB_SYS_VERSION   7
+#define HUB_SYS_UPDATE    8
 #define HUB_DIR_LS       10
 #define HUB_DIR_MK       11
 #define HUB_DIR_RM       12
 #define HUB_DIR_CD       13
-#define HUB_FIL_OPEN     21
-#define HUB_FIL_SEEK     22
-#define HUB_FIL_READ     23
-#define HUB_FIL_WRITE    24
-#define HUB_FIL_CLOSE    25
+#define HUB_FILE_OPEN    21
+#define HUB_FILE_SEEK    22
+#define HUB_FILE_READ    23
+#define HUB_FILE_WRITE   24
+#define HUB_FILE_CLOSE   25
 #define HUB_UDP_OPEN     30
 #define HUB_UDP_RECV     31
 #define HUB_UDP_SEND     32
@@ -40,14 +48,6 @@ char espVersion[] = "v0.1";
 #define HUB_WEB_CLOSE    55
 #define HUB_HTTP_GET     60
 #define HUB_HTTP_READ    61
-#define HUB_ESP_CONNECT 100
-#define HUB_ESP_NOTIF   101
-#define HUB_ESP_ERROR   102
-#define HUB_ESP_IP      103
-#define HUB_ESP_MOUSE   104
-#define HUB_ESP_SCAN    105
-#define HUB_ESP_UPDATE  106
-#define HUB_ESP_VERSION 107
 
 // ESP Params
 #define SLOTS    16     // Number of tcp/udp handles
@@ -57,7 +57,7 @@ char espVersion[] = "v0.1";
 char ssid[32], pswd[64];
 
 // Buffers for data exchange
-char megaBuffer[PACKET], megaLen;
+char serBuffer[PACKET], serLen;
 
 // ESP8266 settings
 IPAddress tcpIp[SLOTS];
@@ -72,9 +72,6 @@ WiFiClient webClient;
 HTTPClient httpClient;
 char udpSlot=0, tcpSlot=0;
 uint32_t webTimer, webTimeout;
-
-// Updater Related globals
-WiFiClient updateClient;
 
 // Mouse Setting
 PS2Mouse mouse;
@@ -97,35 +94,35 @@ void udpOpen(unsigned char slot) {
 
     // Open UDP port
     if (udp[slot].begin(listenPort)) {
-        reply(HUB_ESP_NOTIF, "UDP Port Opened");
+        reply(HUB_SYS_NOTIF, "UDP Port Opened");
     } else {
-        reply(HUB_ESP_ERROR, "UDP Port Error");  
+        reply(HUB_SYS_ERROR, "UDP Port Error");  
     }
 }
 
 void udpReceive(unsigned char slot) {
     if (udp[slot].parsePacket()) {
         // Read data from UDP
-        megaLen = udp[slot].read(megaBuffer, PACKET-1);
-        megaBuffer[megaLen] = 0;
+        serLen = udp[slot].read(serBuffer, PACKET-1);
+        serBuffer[serLen] = 0;
         
         // Send it to mega        
         writeCMD(HUB_UDP_RECV);    
         Serial.write(slot); 
-        writeBuffer(megaBuffer, megaLen);         
+        writeBuffer(serBuffer, serLen);         
     }
 }
 
 void udpSend(unsigned char slot) {
-    megaLen = readBuffer(megaBuffer);
+    serLen = readBuffer(serBuffer);
     udp[slot].beginPacket(udpIp[slot], udpPort[slot]);
-    udp[slot].write(megaBuffer, megaLen);
+    udp[slot].write(serBuffer, serLen);
     udp[slot].endPacket();
 }
 
 void udpClose(unsigned char slot) {
     udp[slot].stop();
-    reply(HUB_ESP_NOTIF, "UDP port closed");
+    reply(HUB_SYS_NOTIF, "UDP port closed");
 }
 
 ////////////////////////////
@@ -142,33 +139,33 @@ void tcpOpen(unsigned char slot) {
 
     // Open TCP connection
     if (tcp[slot].connect(tcpIp[slot], tcpPort[slot])) {
-        reply(HUB_ESP_NOTIF, "TCP connection opened");
+        reply(HUB_SYS_NOTIF, "TCP connection opened");
     } else {
-        reply(HUB_ESP_ERROR, "TCP connection failed");
+        reply(HUB_SYS_ERROR, "TCP connection failed");
     }
 }
 
 void tcpReceive(unsigned char slot) {
     if (tcp[slot].available()) {
        // Read data from TCP
-        megaLen = tcp[slot].read((unsigned char*)megaBuffer, PACKET-1);
-        megaBuffer[megaLen] = 0;
+        serLen = tcp[slot].read((unsigned char*)serBuffer, PACKET-1);
+        serBuffer[serLen] = 0;
         
         // Send it to mega        
         writeCMD(HUB_TCP_RECV);    
         Serial.write(slot); 
-        writeBuffer(megaBuffer, megaLen);                 
+        writeBuffer(serBuffer, serLen);                 
     }
 }
 
 void tcpSend(unsigned char slot) {        
-    megaLen = readBuffer(megaBuffer);
-    tcp[slot].write(megaBuffer, megaLen);
+    serLen = readBuffer(serBuffer);
+    tcp[slot].write(serBuffer, serLen);
 }
 
 void tcpClose(unsigned char slot) {
     tcp[slot].stop(); 
-    reply(HUB_ESP_NOTIF, "TCP connection closed");
+    reply(HUB_SYS_NOTIF, "TCP connection closed");
 }
 
 ////////////////////////////
@@ -179,7 +176,7 @@ void webOpen() {
     readInt(&webPort); 
     readInt(&webTimeout);
     webServer.begin(webPort);
-    reply(HUB_ESP_NOTIF, "Web server started");
+    reply(HUB_SYS_NOTIF, "Web server started");
 }
 
 void webReceive() {
@@ -199,7 +196,7 @@ void webReceive() {
         // Setup request reader
         char currentLine[256];
         unsigned char currentLen = 0;
-        megaLen = 0;
+        serLen = 0;
 
         // Parse request
         while (webClient.available() && millis() < webTimer) {
@@ -209,13 +206,13 @@ void webReceive() {
                 // Did we find the GET ... line?
                 if (!strncmp(currentLine, "GET", 3)) {
                     // Transfer line to buffer
-                    megaLen = currentLen;
+                    serLen = currentLen;
                     for (byte i=0; i<currentLen; i++)
-                        megaBuffer[i] = currentLine[i];
+                        serBuffer[i] = currentLine[i];
                     
                     // And send to mega        
                     writeCMD(HUB_WEB_RECV);
-                    writeBuffer(megaBuffer, megaLen);
+                    writeBuffer(serBuffer, serLen);
                     return;                   
                 }
                 currentLen = 0;               
@@ -227,17 +224,17 @@ void webReceive() {
 }
 
 void webHeader() {
-    megaLen = readBuffer(megaBuffer);
+    serLen = readBuffer(serBuffer);
     if (webClient) {
         webClient.write("HTTP/1.1 200 OK\r\nConnection: close\r\n");
-        webClient.write(megaBuffer, megaLen);
+        webClient.write(serBuffer, serLen);
         webClient.write("\r\n\r\n");
     }
 }
 
 void webBody() {       
-    megaLen = readBuffer(megaBuffer);
-    if (webClient) webClient.write(megaBuffer, megaLen);
+    serLen = readBuffer(serBuffer);
+    if (webClient) webClient.write(serBuffer, serLen);
 }
 
 void webSend() {
@@ -249,7 +246,7 @@ void webSend() {
 
 void webClose() {         
     webServer.stop();
-    reply(HUB_ESP_NOTIF, "Web server stopped");
+    reply(HUB_SYS_NOTIF, "Web server stopped");
 }
 
 ////////////////////////////
@@ -264,24 +261,24 @@ void httpGet() {
   
     // Stream file to flash file system
     unsigned long httpSize;
-    megaLen = readBuffer(megaBuffer);
+    serLen = readBuffer(serBuffer);
     httpFile = SPIFFS.open("/http.tmp", "w");
     if (httpFile) {
-        if (httpClient.begin(megaBuffer)) {
+        if (httpClient.begin(serBuffer)) {
             if (httpClient.GET() == HTTP_CODE_OK) {
                 httpClient.writeToStream(&httpFile);
             } else {
-                reply(HUB_ESP_ERROR, "HTTP: url not found!");
+                reply(HUB_SYS_ERROR, "HTTP: url not found!");
                 return;        
             }
             httpClient.end();
         } else {
-            reply(HUB_ESP_ERROR, "HTTP: cannot connect!");
+            reply(HUB_SYS_ERROR, "HTTP: cannot connect!");
             return;
         }
         httpFile.close();
     } else {
-        reply(HUB_ESP_ERROR, "HTTP: flash drive error!");
+        reply(HUB_SYS_ERROR, "HTTP: flash drive error!");
         return;
     }
     
@@ -297,23 +294,31 @@ void httpGet() {
 
 void httpRead() {
     // Stream required number of bytes
-    megaLen = 0;
+    serLen = 0;
     if (httpFile) {
         // Read requested bytes, as long as there are any
         unsigned char requestLen = readChar();
-        while (httpFile.available() && megaLen < requestLen) {
-            megaBuffer[megaLen++] = httpFile.read();
+        while (httpFile.available() && serLen < requestLen) {
+            serBuffer[serLen++] = httpFile.read();
         }
     }
     
     // Send it to mega        
     writeCMD(HUB_HTTP_READ);    
-    writeBuffer(megaBuffer, megaLen);   
+    writeBuffer(serBuffer, serLen);   
 }
 
 ////////////////////////////////
-//      MEGA communication    //
+//    SERIAL communication    //
 ////////////////////////////////
+
+void setupSERIAL() {  
+    Serial.begin(115200);   // MEGA comm.
+    while (!Serial) ;
+    Serial.setTimeout(10);
+    Serial.flush();  
+    Serial.readString();
+}
 
 void writeCMD(char cmd) {
     Serial.print("CMD");
@@ -362,7 +367,7 @@ void reply(unsigned char type, char *message) {
 }
 
 ////////////////////////////////
-//        Wifi functions      //
+//        ESP functions       //
 ////////////////////////////////
 
 void wifiConnect(char *ssid, char *pswd) {
@@ -376,7 +381,7 @@ void wifiConnect(char *ssid, char *pswd) {
     unsigned long timeout = millis()+9000;
     while (WiFi.status() != WL_CONNECTED) {
         if (millis() > timeout) {
-          reply(HUB_ESP_IP, "Not connected...");
+          reply(HUB_SYS_IP, "Not connected...");
           return;
         }
         delay(10);
@@ -385,42 +390,150 @@ void wifiConnect(char *ssid, char *pswd) {
     // Send back IP address
     char ip[17];
     WiFi.localIP().toString().toCharArray(ip, 16);
-    reply(HUB_ESP_IP, ip);
+    reply(HUB_SYS_IP, ip);
 }
 
 void wifiScan() {
     unsigned char len = WiFi.scanNetworks();
-    strcpy(megaBuffer, "SSID List:\n");
+    strcpy(serBuffer, "SSID List:\n");
     for (byte i=0; i<len; i++) {
-        strcat(megaBuffer, WiFi.SSID(i).c_str());
-        strcat(megaBuffer, "\n");
+        strcat(serBuffer, WiFi.SSID(i).c_str());
+        strcat(serBuffer, "\n");
     }
-    reply(HUB_ESP_NOTIF, megaBuffer);  
+    reply(HUB_SYS_NOTIF, serBuffer);  
 }
 
 void updateESP() {
     // Attempt to download update and flash ESP
     ESPhttpUpdate.rebootOnUpdate(false);
-    megaLen = readBuffer(megaBuffer); megaBuffer[megaLen] = 0;
-    t_httpUpdate_return ret = ESPhttpUpdate.update(megaBuffer);
+    serLen = readBuffer(serBuffer); serBuffer[serLen] = 0;
+    t_httpUpdate_return ret = ESPhttpUpdate.update(serBuffer);
 
     // Process result
     char message[64] = "";
     switch(ret) {
     case HTTP_UPDATE_FAILED:
         sprintf(message, "Update failed (%d)", ESPhttpUpdate.getLastError());
-        reply(HUB_ESP_NOTIF, message);
+        reply(HUB_SYS_NOTIF, message);
         break;                
     case HTTP_UPDATE_NO_UPDATES:
-        reply(HUB_ESP_NOTIF, "No update available");
+        reply(HUB_SYS_NOTIF, "No update available");
         break;                
     case HTTP_UPDATE_OK:
-        reply(HUB_ESP_NOTIF, "Update complete");
+        reply(HUB_SYS_NOTIF, "Update complete");
         break;  
    default:
-        reply(HUB_ESP_NOTIF, "Update error");
+        reply(HUB_SYS_NOTIF, "Update error");
         break;
     }
+}
+
+////////////////////////////////
+//     Command Processing     //
+////////////////////////////////
+
+char lastCMD;
+
+void processCMD() {
+    lastCMD = readChar();
+    switch (lastCMD) {
+
+      case HUB_SYS_RESET:
+        ESP.restart();
+      
+      case HUB_SYS_VERSION:
+        writeCMD(HUB_SYS_VERSION);
+        writeBuffer(espVersion, strlen(espVersion));
+        break;
+      
+      case HUB_SYS_CONNECT:
+        readBuffer(ssid);
+        readBuffer(pswd);
+        wifiConnect(ssid, pswd);
+        break;
+
+      case HUB_SYS_MOUSE:
+        if (!mouse.init()) {
+            reply(HUB_SYS_NOTIF, "Mouse not connected");
+            mousePeriod = 0;
+            readChar();
+        } else {
+            reply(HUB_SYS_NOTIF, "Mouse connected");
+            mousePeriod = readChar();
+        }
+        break;
+
+      case HUB_SYS_SCAN:
+        wifiScan();
+        break;
+
+      case HUB_SYS_UPDATE:
+        updateESP();          
+        break;
+
+      case HUB_UDP_SLOT:
+        udpSlot = readChar();
+        break;
+        
+      case HUB_UDP_OPEN:
+        udpOpen(udpSlot);
+        break;
+
+      case HUB_UDP_SEND:                        
+        udpSend(udpSlot);
+        break;
+
+      case HUB_UDP_CLOSE:
+        udpClose(udpSlot);
+        break;
+
+      case HUB_TCP_SLOT:
+        tcpSlot = readChar();
+        break;
+        
+      case HUB_TCP_OPEN:
+        tcpOpen(tcpSlot);
+        break;    
+
+      case HUB_TCP_SEND:    
+        tcpSend(tcpSlot);
+        break;
+
+      case HUB_TCP_CLOSE:
+        tcpClose(tcpSlot);
+        break;
+
+      case HUB_WEB_OPEN:
+        webOpen();
+        break;  
+
+      case HUB_WEB_HEADER:
+        webHeader();
+        break;  
+                    
+      case HUB_WEB_BODY:
+        webBody();
+        break;  
+                    
+      case HUB_WEB_SEND:
+        webSend();
+        break;  
+                    
+      case HUB_WEB_CLOSE:
+        webClose();
+        break;  
+
+      case HUB_HTTP_GET:
+        httpGet();
+        break;
+
+      case HUB_HTTP_READ:
+        httpRead();
+        break;
+
+      default:
+        reply(HUB_SYS_ERROR, "CMD unknown");
+    } 
 }
 
 ////////////////////////////////
@@ -428,124 +541,19 @@ void updateESP() {
 ////////////////////////////////
 
 void setup(void) {
-    // Setup serial port
-    Serial.begin(115200);
-    while (!Serial) ;
-    Serial.setTimeout(10);
-    Serial.flush();  
-    Serial.readString();
-
-    // Mount Flash File System (for temporary storage of files)
-    SPIFFS.begin();
+    setupSERIAL();    
+    SPIFFS.begin();  // Mount Flash File System (for temporary storage of files)
 }
 
 void loop(void) {
     // Auto-reconnect?
-    if (WiFi.status() != WL_CONNECTED) {
+    if (WiFi.status() != WL_CONNECTED)
         if (ssid[0]) wifiConnect(ssid, pswd);
-    }
     
-    // Check commands from MEGA
-    char cmd;
-    if (Serial.find("CMD")) {
-        cmd = readChar();
-        switch (cmd) {
-          
-          case HUB_ESP_VERSION:
-            writeCMD(HUB_ESP_VERSION);
-            writeBuffer(espVersion, strlen(espVersion));
-            break;
-          
-          case HUB_ESP_CONNECT:
-            readBuffer(ssid);
-            readBuffer(pswd);
-            wifiConnect(ssid, pswd);
-            break;
-
-          case HUB_ESP_MOUSE:
-            if (!mouse.init()) {
-                reply(HUB_ESP_NOTIF, "Mouse not connected");
-                mousePeriod = 0;
-                readChar();
-            } else {
-                reply(HUB_ESP_NOTIF, "Mouse connected");
-                mousePeriod = readChar();
-            }
-            break;
-
-          case HUB_ESP_SCAN:
-            wifiScan();
-            break;
-
-          case HUB_ESP_UPDATE:
-            updateESP();          
-            break;
-
-          case HUB_UDP_SLOT:
-            udpSlot = readChar();
-            break;
-            
-          case HUB_UDP_OPEN:
-            udpOpen(udpSlot);
-            break;
-
-          case HUB_UDP_SEND:                        
-            udpSend(udpSlot);
-            break;
-
-          case HUB_UDP_CLOSE:
-            udpClose(udpSlot);
-            break;
-
-          case HUB_TCP_SLOT:
-            tcpSlot = readChar();
-            break;
-            
-          case HUB_TCP_OPEN:
-            tcpOpen(tcpSlot);
-            break;    
-
-          case HUB_TCP_SEND:    
-            tcpSend(tcpSlot);
-            break;
-
-          case HUB_TCP_CLOSE:
-            tcpClose(tcpSlot);
-            break;
-
-          case HUB_WEB_OPEN:
-            webOpen();
-            break;  
-
-          case HUB_WEB_HEADER:
-            webHeader();
-            break;  
-                        
-          case HUB_WEB_BODY:
-            webBody();
-            break;  
-                        
-          case HUB_WEB_SEND:
-            webSend();
-            break;  
-                        
-          case HUB_WEB_CLOSE:
-            webClose();
-            break;  
-
-          case HUB_HTTP_GET:
-            httpGet();
-            break;
-
-          case HUB_HTTP_READ:
-            httpRead();
-            break;
-
-          default:
-            reply(HUB_ESP_ERROR, "CMD unknown");
-        }
-    }
-
+    // Process commands from MEGA
+    if (Serial.find("CMD"))
+        processCMD();
+        
     // Check UDP/TCP slots and Server
     for (byte slot=0; slot<SLOTS; slot++) udpReceive(slot);
     for (byte slot=0; slot<SLOTS; slot++) tcpReceive(slot);
@@ -554,7 +562,7 @@ void loop(void) {
     // Read Mouse State
     if (mousePeriod && (millis()-mouseTimer > mousePeriod) && mouse.update()) {
         mouseTimer = millis();
-        writeCMD(HUB_ESP_MOUSE);
+        writeCMD(HUB_SYS_MOUSE);
         Serial.write(mouse.status);
         Serial.write(mouse.x);
         Serial.write(mouse.y);
