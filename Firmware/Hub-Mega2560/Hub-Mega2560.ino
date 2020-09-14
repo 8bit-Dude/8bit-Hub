@@ -920,6 +920,20 @@ void processCMD() {
 char ssid[32];
 char pswd[64];
 
+void wifiVersion() {
+    // Get ESP version
+    writeCMD(HUB_SYS_VERSION);    
+    lastCMD = 0;     
+    while (lastCMD != HUB_SYS_VERSION)
+        if (Serial3.find("CMD")) processCMD();
+    readBuffer();
+    memcpy(espVersion, serBuffer, 4);
+
+    // Check version was received correctly
+    if (strncmp(espVersion, "v", 1))
+        Serial.println("Error: cannot determine current ESP version.");  
+}
+
 unsigned char wifiScan() {
     // Scan and wait for Answer
     writeCMD(HUB_SYS_SCAN);    
@@ -937,21 +951,24 @@ typedef void (*do_reboot_t)(void);
 const do_reboot_t do_reboot = (do_reboot_t)((FLASHEND-511)>>1);
 
 unsigned char askUpdate(char *core, char *version, char *update) {
-    unsigned char doUpdate = 0;
-
     // Ask user if they want to update
     lcd.setCursor(0,1);
     lcd.print("Update available!");               
     lcd.setCursor(0,2);
-    lcd.print(core); lcd.print(" FW: "); 
+    lcd.print(core); lcd.print(": "); 
     lcd.print(version); lcd.print(" -> "); lcd.print(update);
     lcd.setCursor(0,3);
-    lcd.print("Press FIRE to update.");       
+    lcd.print("Press FIRE to update");       
+
+    // Give 5s to decide...
+    unsigned char doUpdate = 0;
     uint32_t timer = millis(); 
-    while (millis()-timer < 2000) {
+    while (millis()-timer < 5000) {
         readJOY();
-        if (!(joyState[0] & joyStnd[4]) || !(joyState[0] & joyStnd[5])) 
+        if (!(joyState[0] & joyStnd[4]) || !(joyState[0] & joyStnd[5])) {
             doUpdate = 1;
+            break;
+        }
     }
 
     // Clear LCD and return result
@@ -962,22 +979,14 @@ unsigned char askUpdate(char *core, char *version, char *update) {
 }
 
 void checkUpdate() {
-    unsigned char doUpdate;
-  
-    // Get ESP version
-    writeCMD(HUB_SYS_VERSION);    
-    lastCMD = 0;     
-    while (lastCMD != HUB_SYS_VERSION)
-        if (Serial3.find("CMD")) processCMD();
+    // Check if we received IP...
+    while (lastCMD != HUB_SYS_IP)
+        if (Serial3.find("CMD"))
+            lastCMD = readChar();
     readBuffer();
-    memcpy(espVersion, serBuffer, 4);
-
-    // Check version was received correctly
-    if (strncmp(espVersion, "v", 1)) {
-        Serial.println("Error: cannot determine current ESP version.");
+    if (!strcmp(serBuffer, "Not connected..."))
         return;
-    }
-  
+    
     // Check latest version number
     writeCMD(HUB_HTTP_GET);
     writeBuffer(urlVer, strlen(urlVer)); 
@@ -994,28 +1003,43 @@ void checkUpdate() {
     httpMode = HTTP_PACKET;   
 
     // Check version data was received correctly
+    if (strncmp(espVersion, "v", 1)) {
+        Serial.println("Error: cannot determine current ESP version.");  
+        lcd.setCursor(0,1); lcd.print("Update error...");
+        delay(1000);
+        return;
+    }
     if (strncmp(espUpdate, "v", 1)) {
         Serial.println("Error: cannot determine latest ESP version.");
+        lcd.setCursor(0,1); lcd.print("Update error...");
+        delay(1000);
         return;
     }    
     if (strncmp(megaUpdate, "v", 1)) {
         Serial.println("Error: cannot determine latest MEGA version.");
+        lcd.setCursor(0,1); lcd.print("Update error...");
+        delay(1000);
         return;
     }
     
     // Display info
     Serial.print("ESP Firmware: "); Serial.print(espVersion); Serial.print(" -> "); Serial.println(espUpdate); 
     Serial.print("MEGA Firmware: "); Serial.print(megaVersion); Serial.print(" -> "); Serial.println(megaUpdate); 
+    if (!strncmp(espVersion, espUpdate, 4) && !strncmp(megaVersion, megaUpdate, 4)) {
+        lcd.setCursor(0,1); lcd.print("System up-to-date!");
+        delay(1000);
+        return;
+    }
     
     // Apply ESP update?
     if (strncmp(espVersion, espUpdate, 4)) {
         // Ask user if they want to update
-        if (!askUpdate("ESP", espVersion, espUpdate))
+        if (!askUpdate("Wifi", espVersion, espUpdate))
             return;
 
         // Process with update
-        lcd.setCursor(0,1); lcd.print("Updating ESP...");
         Serial.println("Updating ESP...");
+        lcd.setCursor(0,1); lcd.print("Updating Wifi...");
         writeCMD(HUB_SYS_UPDATE);
         writeBuffer(urlEsp, strlen(urlEsp));
         lastCMD = 0;
@@ -1034,6 +1058,7 @@ void checkUpdate() {
             do_reboot();
         } else {
             lcd.setCursor(0,1); lcd.print("Update failed...");
+            delay(2000);
             return;
         }
     }
@@ -1041,11 +1066,11 @@ void checkUpdate() {
     // Apply MEGA update?
     if (strncmp(megaVersion, megaUpdate, 4)) {
         // Ask user if they want to update
-        if (!askUpdate("MEGA", megaVersion, megaUpdate))
+        if (!askUpdate("Core", megaVersion, megaUpdate))
             return;
         
         // Fetch update file on ESP
-        lcd.setCursor(0,1); lcd.print("Updating MEGA...");
+        lcd.setCursor(0,1); lcd.print("Updating Core...");
         Serial.println("Downloading update...");
         writeCMD(HUB_HTTP_GET);
         writeBuffer(urlMega, strlen(urlMega));
@@ -1059,6 +1084,7 @@ void checkUpdate() {
         if (!httpSize) {
             lcd.setCursor(0,1); lcd.print("Update failed...");
             Serial.println("Error: cannot download update.");
+            delay(2000);
             return;
         }
 
@@ -1066,6 +1092,7 @@ void checkUpdate() {
         if (!InternalStorage.open(httpSize)) {
             lcd.setCursor(0,1); lcd.print("Update failed...");
             Serial.println("Error: not enough space to store the update.");
+            delay(2000);
             return;
         }
 
@@ -1103,11 +1130,12 @@ void checkUpdate() {
         } else {
             lcd.setCursor(0,1); lcd.print("Update failed...");
             Serial.println("Error: could not download entire file.");
+            delay(2000);
             return;
         }
 
         lcd.setCursor(0,1); lcd.print("Rebooting...");
-        Serial.println("Applying MEGA firmware...");
+        Serial.println("Applying MEGA update...");
         Serial.flush();
         InternalStorage.apply();
     }
@@ -1115,10 +1143,6 @@ void checkUpdate() {
 
 void setupESP() {
     // Connect Wifi
-    if (!strlen(ssid) && !strlen(pswd)) {
-        strcpy(ssid, "NETGEAR95");      // "8bit-Unity"
-        strcpy(pswd, "fluffykayak536"); // "0123456789"
-    }
     writeCMD(HUB_SYS_CONNECT);
     writeBuffer(ssid, strlen(ssid));
     writeBuffer(pswd, strlen(pswd));
@@ -1136,19 +1160,15 @@ const char* joyCode = "UDLRAB";
 
 void wifiTest() {
     // Run Wifi Test
+    setupESP();
     lcd.setCursor(0,0);
     lcd.print("Wifi:");
-    setupESP();
-
-    // Wait for Answer
-    uint32_t timeout = millis()+9000;
-    while (millis() < timeout) {
-        if (Serial3.find("CMD") && readChar() == HUB_SYS_IP) {
-            if (readBuffer()) lcd.print(serBuffer);
-            break;
-        }
-    }
-    if (millis() >= timeout) lcd.print("Error!");  
+    lastCMD = 0;     
+    while (lastCMD != HUB_SYS_IP)
+        if (Serial3.find("CMD"))
+            lastCMD = readChar();
+    readBuffer();
+    lcd.print(serBuffer);
 }
 
 void tcpTest() {
@@ -1419,6 +1439,12 @@ void readConfig() {
     hubMode = 255-EEPROM.read(0); if (hubMode>HUB_MODES) hubMode = 0;
     for (i=0; i<32; i++) ssid[i] = 255-EEPROM.read(32+i);
     for (i=0; i<64; i++) pswd[i] = 255-EEPROM.read(64+i);
+
+    // Override with some defaults
+    if (!strlen(ssid) && !strlen(pswd)) {
+        strcpy(ssid, "8bit-Unity");
+        strcpy(pswd, "0123456789"); 
+    }    
 }
 
 void writeConfig() {
@@ -1431,8 +1457,8 @@ void writeConfig() {
 
 byte menu = 1, row = 1;
 boolean changes = false;  // Let's be kind on eeprom...
-const char* menuHeader[2] = {"   < Hub Config >   ", "  < Wifi Config >   "};
-const char* menuParam[2][3] = {{"Mode:", "Test:", "Exit:"}, {"Ntwk:", "SSID:", "Pass:"}};
+const char* menuHeader[3] = {"   < Hub Config >   ", "  < Wifi Config >   ", "    < Firmware >    "};
+const char* menuParam[3][3] = {{"Mode:", "Test:", "Exit:"}, {"Ntwk:", "SSID:", "Pass:"}, {"Wifi:", "Core:", "Updt:"}};
 
 void configMenu() {
     char s=0;
@@ -1478,6 +1504,18 @@ void configMenu() {
                     lcd.print(pswd);
                     break;    
                 } break;            
+            case 3:
+                switch(param) {
+                case 1:
+                    lcd.print(espVersion);
+                    break;
+                case 2:
+                    lcd.print(megaVersion);
+                    break;    
+                case 3:
+                    lcd.print("Check now");
+                    break;
+                } break;            
             }
         }
         lcd.setCursor(5,row);
@@ -1490,8 +1528,8 @@ void configMenu() {
         // Check Input
         if (!(joyState[0] & joyStnd[0])) { row--; if (row<1) row = 3; }
         if (!(joyState[0] & joyStnd[1])) { row++; if (row>3) row = 1; }
-        if (!(joyState[0] & joyStnd[2])) { menu--; if (menu<1)  menu = 2; }
-        if (!(joyState[0] & joyStnd[3])) { menu++; if (menu>2)  menu = 1; }
+        if (!(joyState[0] & joyStnd[2])) { menu--; if (menu<1)  menu = 3; }
+        if (!(joyState[0] & joyStnd[3])) { menu++; if (menu>3)  menu = 1; }
         if (!(joyState[0] & joyStnd[4]) || !(joyState[0] & joyStnd[5])) {   
             switch (menu) {
             case 1:
@@ -1549,6 +1587,17 @@ void configMenu() {
                     changes = true;
                     break;    
                 } break;            
+            case 3:         
+                switch(row) {
+                case 3:
+                    // Try to Update
+                    lcd.setCursor(0,1); lcd.print("Please wait...");
+                    lcd.setCursor(0,2); lcd.print(blank);
+                    lcd.setCursor(0,3); lcd.print(blank);
+                    setupESP();
+                    checkUpdate();
+                    break;
+                } break;            
             }
         }
     }
@@ -1566,12 +1615,13 @@ void setup() {
     
     // Read config from EEPROM
     readConfig();
+    wifiVersion();
     
     // Chance to enter config (press fire)
     lcd.setCursor(0,1);
     lcd.print("Press FIRE for Conf.");       
     uint32_t timer = millis(); 
-    while (millis()-timer < 2000) {
+    while (millis()-timer < 3000) {
         readJOY();
         if (!(joyState[0] & joyStnd[4]) || !(joyState[0] & joyStnd[5])) {
             configMenu();
@@ -1588,6 +1638,7 @@ void setup() {
     checkUpdate();
 
     // Display status info on LCD
+    writeCMD(HUB_SYS_IP);
     displayMode();
     displaySD();
 }

@@ -381,16 +381,30 @@ void wifiConnect(char *ssid, char *pswd) {
     unsigned long timeout = millis()+9000;
     while (WiFi.status() != WL_CONNECTED) {
         if (millis() > timeout) {
-          reply(HUB_SYS_IP, "Not connected...");
+          reply(HUB_SYS_NOTIF, "Cannot connect to Wifi..."); 
+          reply(HUB_SYS_IP, "Not connected..."); 
           return;
         }
         delay(10);
-    }
-  
+    }  
+
     // Send back IP address
     char ip[17];
     WiFi.localIP().toString().toCharArray(ip, 16);
+    reply(HUB_SYS_NOTIF, "Connected to Wifi!");
     reply(HUB_SYS_IP, ip);
+}
+
+void wifiIP() {
+    // Send back system IP
+    if (WiFi.status() != WL_CONNECTED) {
+        reply(HUB_SYS_IP, "Not connected..."); 
+    } else {
+        // Send back IP address
+        char ip[17];
+        WiFi.localIP().toString().toCharArray(ip, 16);
+        reply(HUB_SYS_IP, ip);
+    }
 }
 
 void wifiScan() {
@@ -452,6 +466,10 @@ void processCMD() {
         wifiConnect(ssid, pswd);
         break;
 
+      case HUB_SYS_IP:
+        wifiIP();
+        break;
+        
       case HUB_SYS_MOUSE:
         if (!mouse.init()) {
             reply(HUB_SYS_NOTIF, "Mouse not connected");
