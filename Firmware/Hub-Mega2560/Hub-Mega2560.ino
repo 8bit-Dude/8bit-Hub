@@ -755,8 +755,11 @@ unsigned char readBuffer() {
     return serLen;
 }
 
+char IP[17] = "Not connected...";
+
 void readIP() {
     if (readBuffer()) {
+        strcpy(IP, serBuffer);
         Serial.print("IP: ");
         Serial.println(serBuffer);
     }  
@@ -809,7 +812,7 @@ void readTcp() {
 void readWeb() {
     // Store data into packet
     if (readBuffer()) {
-        pushPacket(HUB_WEB_RECV, -1);  
+        pushPacket(HUB_WEB_RECV, -1);
     #if defined(__DEBUG_WEB__)
         Serial.print("WEB RECV: ");
         Serial.write(serBuffer, serLen); 
@@ -866,14 +869,16 @@ void readHttp() {
 //     Command Processing     //
 ////////////////////////////////
 
-char lastCMD;
+char lastEspCMD;
+char lastComCMD;
 
-void processCMD() {
-    lastCMD = readChar();
+void processEspCMD() {
+    lastEspCMD = readChar();
 #ifdef __DEBUG_CMD__
-    Serial.println(cmdString[lastCMD]);
+    Serial.print("ESP: ");
+    Serial.println(cmdString[lastEspCMD]);
 #endif
-    switch (lastCMD) {
+    switch (lastEspCMD) {
     case HUB_SYS_IP:
         readIP();
         displayIP();
@@ -913,6 +918,144 @@ void processCMD() {
     }  
 }
 
+void processComCMD() {
+    unsigned char tmp;
+    unsigned int offset;   
+    lastComCMD = txBuffer[0];
+#ifdef __DEBUG_CMD__
+    Serial.print("COM: ");
+    Serial.println(cmdString[lastComCMD]);
+#endif
+    switch (lastComCMD) {  
+    case HUB_SYS_RESET:
+        // Pop any left-over packet, and close files                
+        while (hubHead) popPacket(hubHead->ID);
+        for (byte i=0; i<FILES; i++) {
+            if (hubFile[i]) hubFile[i].close();
+        }         
+        countID = 0;
+        rxID = 0;
+        break;
+
+    case HUB_SYS_IP:
+        // Send IP address
+        strcpy(serBuffer, IP);
+        serLen = strlen(IP);
+        pushPacket(HUB_SYS_IP, -1);
+        break;
+
+    case HUB_FILE_OPEN:
+        // Check if file was previously opened
+        if (hubFile[txBuffer[1]])
+            hubFile[txBuffer[1]].close();
+        
+        // Open file (modes are 0:read, 1:write, 2:append)
+        switch (txBuffer[2]) {
+        case 0:                
+            hubFile[txBuffer[1]] = SD.open(&txBuffer[3], FILE_READ); 
+            break;
+        case 1:
+            if (SD.exists(&txBuffer[3])) { SD.remove(&txBuffer[3]); }
+            hubFile[txBuffer[1]] = SD.open(&txBuffer[3], FILE_WRITE); 
+            break;
+        case 2:                
+            hubFile[txBuffer[1]] = SD.open(&txBuffer[3], FILE_WRITE);
+            break;
+        }
+        break;
+
+    case HUB_FILE_SEEK:
+        // Seek file position (offset from beginning)
+        offset = (txBuffer[3] * 256) + txBuffer[2];
+        if (hubFile[txBuffer[1]]) { 
+            hubFile[txBuffer[1]].seek(offset);
+        }
+        break;
+
+    case HUB_FILE_READ:
+        if (hubFile[txBuffer[1]]) {
+            // Read chunk from file
+            serLen = 0;
+            while (hubFile[txBuffer[1]].available() && tmp<txBuffer[2]) {
+                serBuffer[serLen++] = hubFile[txBuffer[1]].read();
+            }
+            pushPacket(HUB_FILE_READ, -1);
+        }
+        break;
+
+    case HUB_FILE_WRITE:
+        if (hubFile[txBuffer[1]]) hubFile[txBuffer[1]].write(&txBuffer[2], txLen-3);
+        break;
+
+    case HUB_FILE_CLOSE:
+        if (hubFile[txBuffer[1]]) hubFile[txBuffer[1]].close();
+        break;                          
+      
+    case HUB_UDP_OPEN:
+        writeCMD(HUB_UDP_OPEN);
+        writeChar(txBuffer[1]); writeChar(txBuffer[2]);
+        writeChar(txBuffer[3]); writeChar(txBuffer[4]);
+        writeInt(txBuffer[5]+256*txBuffer[6]); 
+        writeInt(txBuffer[7]+256*txBuffer[8]);
+        break;
+
+    case HUB_UDP_SEND:
+        writeCMD(HUB_UDP_SEND);
+        writeBuffer(&txBuffer[1], txLen-1);
+        break;
+
+    case HUB_UDP_CLOSE:
+        writeCMD(HUB_UDP_CLOSE);
+        break;
+        
+    case HUB_TCP_OPEN:
+        // Send TCP init params to ESP
+        writeCMD(HUB_TCP_OPEN);
+        writeChar(txBuffer[1]); writeChar(txBuffer[2]);
+        writeChar(txBuffer[3]); writeChar(txBuffer[4]);
+        writeInt(txBuffer[5]+256*txBuffer[6]); 
+        break;
+
+    case HUB_TCP_SEND:
+        // Send TCP packet to ESP
+        writeCMD(HUB_TCP_SEND);
+        writeBuffer(&txBuffer[1], txLen-1);
+        break;
+
+    case HUB_TCP_CLOSE:
+        writeCMD(HUB_TCP_CLOSE);
+        break;
+
+    case HUB_WEB_OPEN:
+        // Send WEB init params to ESP
+        writeCMD(HUB_WEB_OPEN);
+        writeInt(txBuffer[1]+256*txBuffer[2]); // Port
+        writeInt(txBuffer[3]+256*txBuffer[4]); // TimeOut
+        break; 
+
+    case HUB_WEB_HEADER:
+        // Send TCP packet to ESP
+        writeCMD(HUB_WEB_HEADER);
+        writeBuffer(&txBuffer[1], txLen-1);                 
+        break;
+
+    case HUB_WEB_BODY:
+        // Send TCP packet to ESP
+        writeCMD(HUB_WEB_BODY);
+        writeBuffer(&txBuffer[1], txLen-1);                 
+        break;
+
+    case HUB_WEB_SEND:
+        // Send TCP packet to ESP
+        writeCMD(HUB_WEB_SEND);
+        break;
+        
+    case HUB_WEB_CLOSE:
+        writeCMD(HUB_WEB_CLOSE);
+        break;    
+    }                                             
+}
+
 ////////////////////////////////
 //       WIFI functions       //
 ////////////////////////////////
@@ -923,9 +1066,9 @@ char pswd[64];
 void wifiVersion() {
     // Get ESP version
     writeCMD(HUB_SYS_VERSION);    
-    lastCMD = 0;     
-    while (lastCMD != HUB_SYS_VERSION)
-        if (Serial3.find("CMD")) processCMD();
+    lastEspCMD = 0;     
+    while (lastEspCMD != HUB_SYS_VERSION)
+        if (Serial3.find("CMD")) processEspCMD();
     readBuffer();
     memcpy(espVersion, serBuffer, 4);
 
@@ -980,9 +1123,9 @@ unsigned char askUpdate(char *core, char *version, char *update) {
 
 void checkUpdate() {
     // Check if we received IP...
-    while (lastCMD != HUB_SYS_IP)
+    while (lastEspCMD != HUB_SYS_IP)
         if (Serial3.find("CMD"))
-            lastCMD = readChar();
+            lastEspCMD = readChar();
     readBuffer();
     if (!strcmp(serBuffer, "Not connected..."))
         return;
@@ -995,9 +1138,9 @@ void checkUpdate() {
 
     // Wait to receive data
     httpMode = HTTP_NULL;   
-    lastCMD = 0;
-    while (lastCMD != HUB_HTTP_READ)
-        if (Serial3.find("CMD")) processCMD();
+    lastEspCMD = 0;
+    while (lastEspCMD != HUB_HTTP_READ)
+        if (Serial3.find("CMD")) processEspCMD();
     memcpy(espUpdate, &serBuffer[4], 4); espUpdate[4] = 0;
     memcpy(megaUpdate, &serBuffer[16], 4); megaUpdate[4] = 0;
     httpMode = HTTP_PACKET;   
@@ -1042,9 +1185,9 @@ void checkUpdate() {
         lcd.setCursor(0,1); lcd.print("Updating Wifi...");
         writeCMD(HUB_SYS_UPDATE);
         writeBuffer(urlEsp, strlen(urlEsp));
-        lastCMD = 0;
-        while (lastCMD != HUB_SYS_NOTIF)
-            if (Serial3.find("CMD")) processCMD();
+        lastEspCMD = 0;
+        while (lastEspCMD != HUB_SYS_NOTIF)
+            if (Serial3.find("CMD")) processEspCMD();
 
         // Reboot if update was succesful
         if (!strncmp(serBuffer, "Update complete", 15)) {
@@ -1076,9 +1219,9 @@ void checkUpdate() {
         writeBuffer(urlMega, strlen(urlMega));
 
         // Wait to receive file size
-        lastCMD = 0;            
-        while (lastCMD != HUB_HTTP_GET)
-            if (Serial3.find("CMD")) processCMD();
+        lastEspCMD = 0;            
+        while (lastEspCMD != HUB_HTTP_GET)
+            if (Serial3.find("CMD")) processEspCMD();
 
         // Check file has size
         if (!httpSize) {
@@ -1105,9 +1248,9 @@ void checkUpdate() {
             writeChar(160);
     
             // Wait to receive packet
-            lastCMD = 0;
-            while (lastCMD != HUB_HTTP_READ)
-                if (Serial3.find("CMD")) processCMD();
+            lastEspCMD = 0;
+            while (lastEspCMD != HUB_HTTP_READ)
+                if (Serial3.find("CMD")) processEspCMD();
 
             // Check if packet was empty
             if (serLen)
@@ -1163,10 +1306,10 @@ void wifiTest() {
     setupESP();
     lcd.setCursor(0,0);
     lcd.print("Wifi:");
-    lastCMD = 0;     
-    while (lastCMD != HUB_SYS_IP)
+    lastEspCMD = 0;     
+    while (lastEspCMD != HUB_SYS_IP)
         if (Serial3.find("CMD"))
-            lastCMD = readChar();
+            lastEspCMD = readChar();
     readBuffer();
     lcd.print(serBuffer);
 }
@@ -1655,7 +1798,7 @@ void loop() {
     readJOY(); 
       
     // Process commands from ESP8266
-    if (Serial3.find("CMD")) processCMD();
+    if (Serial3.find("CMD")) processEspCMD();
 
     // Send COM data
     byte code = COMM_ERR_NODATA;
@@ -1674,136 +1817,8 @@ void loop() {
     }
 
     // Process received COM data
-    if (code != COMM_ERR_NODATA) {        
-        unsigned char tmp;
-        unsigned int offset;        
-        if (txLen) {
-        #ifdef __DEBUG_CMD__
-            if (txBuffer[0]<60) { Serial.print(cmdString[txBuffer[0]]); Serial.print('\n'); }
-        #endif
-            switch (txBuffer[0]) {
-            case HUB_SYS_RESET:
-                // Pop any left-over packet, and close files                
-                while (hubHead) popPacket(hubHead->ID);
-                for (byte i=0; i<FILES; i++) {
-                    if (hubFile[i]) hubFile[i].close();
-                }         
-                countID = 0;
-                rxID = 0;
-                break;
-
-            case HUB_FILE_OPEN:
-                // Check if file was previously opened
-                if (hubFile[txBuffer[1]]) { hubFile[txBuffer[1]].close(); }
-                
-                // Open file (modes are 0:read, 1:write, 2:append)
-                switch (txBuffer[2]) {
-                case 0:                
-                    hubFile[txBuffer[1]] = SD.open(&txBuffer[3], FILE_READ); 
-                    break;
-                case 1:
-                    if (SD.exists(&txBuffer[3])) { SD.remove(&txBuffer[3]); }
-                    hubFile[txBuffer[1]] = SD.open(&txBuffer[3], FILE_WRITE); 
-                    break;
-                case 2:                
-                    hubFile[txBuffer[1]] = SD.open(&txBuffer[3], FILE_WRITE);
-                    break;
-                }
-                break;
-
-            case HUB_FILE_SEEK:
-                // Seek file position (offset from beginning)
-                offset = (txBuffer[3] * 256) + txBuffer[2];
-                if (hubFile[txBuffer[1]]) { 
-                    hubFile[txBuffer[1]].seek(offset);
-                }
-                break;
-
-            case HUB_FILE_READ:
-                if (hubFile[txBuffer[1]]) {
-                    // Read chunk from file
-                    serLen = 0;
-                    while (hubFile[txBuffer[1]].available() && tmp<txBuffer[2]) {
-                        serBuffer[serLen++] = hubFile[txBuffer[1]].read();
-                    }
-                    pushPacket(HUB_FILE_READ, -1);
-                }
-                break;
-
-            case HUB_FILE_WRITE:
-                if (hubFile[txBuffer[1]]) hubFile[txBuffer[1]].write(&txBuffer[2], txLen-3);
-                break;
-
-            case HUB_FILE_CLOSE:
-                if (hubFile[txBuffer[1]]) hubFile[txBuffer[1]].close();
-                break;                          
-              
-            case HUB_UDP_OPEN:
-                writeCMD(HUB_UDP_OPEN);
-                writeChar(txBuffer[1]); writeChar(txBuffer[2]);
-                writeChar(txBuffer[3]); writeChar(txBuffer[4]);
-                writeInt(txBuffer[5]+256*txBuffer[6]); 
-                writeInt(txBuffer[7]+256*txBuffer[8]);
-                break;
-
-            case HUB_UDP_SEND:
-                writeCMD(HUB_UDP_SEND);
-                writeBuffer(&txBuffer[1], txLen-1);
-                break;
-
-            case HUB_UDP_CLOSE:
-                writeCMD(HUB_UDP_CLOSE);
-                break;
-                
-            case HUB_TCP_OPEN:
-                // Send TCP init params to ESP
-                writeCMD(HUB_TCP_OPEN);
-                writeChar(txBuffer[1]); writeChar(txBuffer[2]);
-                writeChar(txBuffer[3]); writeChar(txBuffer[4]);
-                writeInt(txBuffer[5]+256*txBuffer[6]); 
-                break;
-
-            case HUB_TCP_SEND:
-                // Send TCP packet to ESP
-                writeCMD(HUB_TCP_SEND);
-                writeBuffer(&txBuffer[1], txLen-1);
-                break;
-
-            case HUB_TCP_CLOSE:
-                writeCMD(HUB_TCP_CLOSE);
-                break;
-
-            case HUB_WEB_OPEN:
-                // Send WEB init params to ESP
-                writeCMD(HUB_WEB_OPEN);
-                writeInt(txBuffer[1]+256*txBuffer[2]); // Port
-                writeInt(txBuffer[3]+256*txBuffer[4]); // TimeOut
-                break; 
-
-            case HUB_WEB_HEADER:
-                // Send TCP packet to ESP
-                writeCMD(HUB_WEB_HEADER);
-                writeBuffer(&txBuffer[1], txLen-1);                 
-                break;
-
-            case HUB_WEB_BODY:
-                // Send TCP packet to ESP
-                writeCMD(HUB_WEB_BODY);
-                writeBuffer(&txBuffer[1], txLen-1);                 
-                break;
-
-            case HUB_WEB_SEND:
-                // Send TCP packet to ESP
-                writeCMD(HUB_WEB_SEND);
-                break;
-                
-            case HUB_WEB_CLOSE:
-                writeCMD(HUB_WEB_CLOSE);
-                break;    
-            }                                             
-        }
-
-        // Report communication
+    if (code != COMM_ERR_NODATA) {     
+        if (txLen) processComCMD();
     #ifdef __DEBUG_COM__
         err[code] += 1;
         //Serial.print(count++);
