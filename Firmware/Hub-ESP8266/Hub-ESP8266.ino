@@ -240,7 +240,6 @@ void webBody() {
 void webSend() {
     if (webClient) {
         webClient.write("\r\n\r\n");
-        webClient.stop();
     }
 }
 
@@ -419,27 +418,9 @@ void wifiScan() {
 
 void updateESP() {
     // Attempt to download update and flash ESP
-    ESPhttpUpdate.rebootOnUpdate(false);
+    ESPhttpUpdate.rebootOnUpdate(true);
     serLen = readBuffer(serBuffer); serBuffer[serLen] = 0;
     t_httpUpdate_return ret = ESPhttpUpdate.update(serBuffer);
-
-    // Process result
-    char message[64] = "";
-    switch(ret) {
-    case HTTP_UPDATE_FAILED:
-        sprintf(message, "Update failed (%d)", ESPhttpUpdate.getLastError());
-        reply(HUB_SYS_NOTIF, message);
-        break;                
-    case HTTP_UPDATE_NO_UPDATES:
-        reply(HUB_SYS_NOTIF, "No update available");
-        break;                
-    case HTTP_UPDATE_OK:
-        reply(HUB_SYS_NOTIF, "Update complete");
-        break;  
-   default:
-        reply(HUB_SYS_NOTIF, "Update error");
-        break;
-    }
 }
 
 ////////////////////////////////
@@ -453,7 +434,7 @@ void processCMD() {
     switch (lastCMD) {
 
       case HUB_SYS_RESET:
-        ESP.restart();
+        ESP.reset();
       
       case HUB_SYS_VERSION:
         writeCMD(HUB_SYS_VERSION);

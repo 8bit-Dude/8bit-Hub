@@ -711,6 +711,7 @@ void setupSERIAL() {
     Serial.readString();
     Serial2.readString();
     Serial3.readString();
+    Serial.println("-System Reboot-");
 }
 
 void writeCMD(char cmd) {
@@ -838,7 +839,11 @@ void getHttp() {
         unsigned char len[4];
         memcpy(len, serBuffer, 4);
         httpSize = (unsigned long)len[0]+256L*(unsigned long)len[1]+65536L*(unsigned long)len[2]+16777216L*(unsigned long)len[3];
-        pushPacket(HUB_HTTP_GET, -1);  
+        if (httpMode == HTTP_PACKET) {
+            // Send back file size
+            memcpy(serBuffer, (char*)&httpSize, 4); serLen = 4;
+            pushPacket(HUB_HTTP_GET, -1);
+        }
     #if defined(__DEBUG_HTTP__)
         Serial.print("HTTP GET: ");
         Serial.print(httpSize); Serial.println(" bytes");
@@ -920,7 +925,8 @@ void processEspCMD() {
 
 void processComCMD() {
     unsigned char tmp;
-    unsigned int offset;   
+    unsigned int offset;
+    unsigned long length;   
     lastComCMD = txBuffer[0];
 #ifdef __DEBUG_CMD__
     Serial.print("COM: ");
@@ -962,6 +968,11 @@ void processComCMD() {
             hubFile[txBuffer[1]] = SD.open(&txBuffer[3], FILE_WRITE);
             break;
         }
+
+        // Send back file size
+        length = hubFile[txBuffer[1]].size();
+        memcpy(serBuffer, (char*)&length, 4); serLen = 4;
+        pushPacket(HUB_FILE_OPEN, txBuffer[1]);
         break;
 
     case HUB_FILE_SEEK:
@@ -1090,9 +1101,6 @@ unsigned char wifiScan() {
     return 0;       
 }
 
-typedef void (*do_reboot_t)(void);
-const do_reboot_t do_reboot = (do_reboot_t)((FLASHEND-511)>>1);
-
 unsigned char askUpdate(char *core, char *version, char *update) {
     // Ask user if they want to update
     lcd.setCursor(0,1);
@@ -1185,25 +1193,32 @@ void checkUpdate() {
         lcd.setCursor(0,1); lcd.print("Updating Wifi...");
         writeCMD(HUB_SYS_UPDATE);
         writeBuffer(urlEsp, strlen(urlEsp));
-        lastEspCMD = 0;
-        while (lastEspCMD != HUB_SYS_NOTIF)
-            if (Serial3.find("CMD")) processEspCMD();
 
-        // Reboot if update was succesful
-        if (!strncmp(serBuffer, "Update complete", 15)) {
-            lcd.setCursor(0,1); lcd.print("Rebooting...");
-            Serial.println("Rebooting...");
-            writeCMD(HUB_SYS_RESET);
-            Serial.flush();
+        // Wait for ESP to Reboot        
+        lastEspCMD = 0;
+        while (lastEspCMD != HUB_SYS_VERSION) {
             delay(1000);
-            MCUSR=0; cli();
-            noInterrupts();
-            do_reboot();
-        } else {
-            lcd.setCursor(0,1); lcd.print("Update failed...");
-            delay(2000);
-            return;
+            writeCMD(HUB_SYS_VERSION);
+            if (Serial3.find("CMD")) processEspCMD();
         }
+        readBuffer();
+
+        // Check new ESP version
+        if (!strncmp(serBuffer, espUpdate, 4)) {
+            lcd.setCursor(0,1); lcd.print("Wifi updated!");
+            Serial.println("ESP update complete");              
+        } else {
+            lcd.setCursor(0,1); lcd.print("Update failed!");
+            Serial.println("ESP update failed");                      
+        }
+
+        // Reset Wifi, and clear screen
+        setupESP();
+        while (lastEspCMD != HUB_SYS_IP)
+            if (Serial3.find("CMD")) processEspCMD(); 
+        lcd.setCursor(0,1); lcd.print(blank);               
+        lcd.setCursor(0,2); lcd.print(blank);               
+        lcd.setCursor(0,3); lcd.print(blank);               
     }
     
     // Apply MEGA update?
@@ -1285,14 +1300,14 @@ void checkUpdate() {
 }
 
 void setupESP() {
+    // Start Mouse
+    writeCMD(HUB_SYS_MOUSE);
+    writeChar(100);   // Refresh period (ms)
+  
     // Connect Wifi
     writeCMD(HUB_SYS_CONNECT);
     writeBuffer(ssid, strlen(ssid));
     writeBuffer(pswd, strlen(pswd));
-
-    // Start Mouse
-    writeCMD(HUB_SYS_MOUSE);
-    writeChar(100);   // Refresh period (ms)
 }
 
 //////////////////////////
