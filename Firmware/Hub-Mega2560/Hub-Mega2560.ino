@@ -613,8 +613,7 @@ void preparePacket() {
     }
     
     // Pre-calculate checksum
-    hubID = (hubID << 4) + (comID & 0x0f);
-    checksum = hubID;
+   checksum = (hubID << 4) + (comID & 0x0f);
     for (byte i=0; i<4; i++)   { checksum += joyState[i]; }
     for (byte i=0; i<2; i++)   { checksum += mouseState[i]; }
     for (byte i=0; i<hubLen; i++) { checksum += hubData[i]; }
@@ -685,7 +684,7 @@ void lynxSendPacket() {
 
     // Send: header, states, length, data, checksum
     lynxWrite(170);
-    lynxWrite(hubID);
+    lynxWrite((hubID << 4) + (comID & 0x0f));
     for (byte i=0; i<4; i++)   { lynxWrite(joyState[i]); }
     for (byte i=0; i<2; i++)   { lynxWrite(mouseState[i]); }
     lynxWrite(hubLen);
@@ -698,21 +697,24 @@ void lynxSendPacket() {
     //Serial2.readBytes(data, rxLen+3);
 }
 
-unsigned char lynxRecvPacket() {  
+void lynxRecvPacket() {  
     // Have we got data?
-    if (!Serial2.available()) { return COM_ERR_NODATA; }
+    if (!Serial2.available()) { comCode = COM_ERR_NODATA; return; }
 
     // Check Header
-    if (Serial2.read() != 170) { return COM_ERR_HEADER; }
+    if (Serial2.read() != 170) { comCode = COM_ERR_HEADER; return; }
 
     // Get RecvID
-    if (!Serial2.readBytes((unsigned char*)&comID, 1)) { return COM_ERR_TRUNCAT; }
+    if (!Serial2.readBytes((unsigned char*)&comID, 1)) { comCode = COM_ERR_TRUNCAT; return; }
 
     // Get Length
-    if (!Serial2.readBytes((unsigned char*)&comLen, 1)) { return COM_ERR_TRUNCAT; }
+    if (!Serial2.readBytes((unsigned char*)&comLen, 1)) { comCode = COM_ERR_TRUNCAT; return; }
 
     // Get Buffer+Footer
-    if (!Serial2.readBytes((unsigned char*)comBuffer, comLen+1)) { return COM_ERR_TRUNCAT; }
+    if (!Serial2.readBytes((unsigned char*)comBuffer, comLen+1)) { comCode = COM_ERR_TRUNCAT; return; }
+
+    // Check Packet for Corruption
+    checkPacket();
 }
 
 ////////////////////////////////
@@ -784,7 +786,7 @@ void oricSendPacket() {
 
     // Send: header, states, length, data, checksum
     oricWrite(170);
-    oricWrite(hubID);
+    oricWrite((hubID << 4) + (comID & 0x0f));
     for (byte i=0; i<4; i++)   { oricWrite(joyState[i]); }
     for (byte i=0; i<2; i++)   { oricWrite(mouseState[i]); }
     oricWrite(hubLen);
@@ -1085,12 +1087,13 @@ void processComCMD() {
 #endif
     switch (lastComCMD) {  
     case HUB_SYS_RESET:
-        // Pop any left-over packet, and close files                
+        // Reset packets and files                
+        packetID = 0;
         while (packetHead) popPacket(packetHead->ID);
         for (byte i=0; i<FILES; i++) {
             if (hubFile[i]) hubFile[i].close();
         }
-        packetID = 0;
+        Serial.println("-System Reset-");
         break;
 
     case HUB_SYS_IP:
@@ -1968,42 +1971,41 @@ void loop() {
     if (Serial3.find("CMD")) 
         processEspCMD();
 
-    // Process commands from COM
-    if (comCode == COM_ERR_OK) {
-        popPacket(comID >> 4);
-        processComCMD();
-    }
-#ifdef __DEBUG_COM__
-    // Record COM Stats
-    if (comCode != COM_ERR_NODATA) {
-        comErr[comCode] += 1;
-        //Serial.print(comCnt++);
-        Serial.print("(Tx)");
-        Serial.print(" Tim="); Serial.print(comTime2-comTime1);
-        Serial.print(" Hea="); Serial.print(comErr[COM_ERR_HEADER]);
-        Serial.print(" Tru="); Serial.print(comErr[COM_ERR_TRUNCAT]);
-        Serial.print(" Cor="); Serial.print(comErr[COM_ERR_CORRUPT]);
-        Serial.print(" ID=");  Serial.print(comID & 0x0f);
-        Serial.print(" Len="); Serial.print(comLen);
-        Serial.print(" (Rx)");
-        Serial.print(" ID="); Serial.print(rxID & 0x0f);
-        Serial.print(" Len="); Serial.println(rxLen);
-    }
-#endif             
-    comCode = COM_ERR_NODATA;
-
     // Process COM I/O
-    comTime1 = micros();
     if (hubMode == MODE_LYNX) {
         // Process Lynx Communication
+        comTime1 = micros();
         lynxRecvPacket();
-        checkPacket();
         if (comCode == COM_ERR_OK) {
             // Send reply immediately (almost)
             delayMicroseconds(6*lynxBitPeriod);   // Bauds: 62500=6* / 41666=8* / 9600=2*
             preparePacket();
             lynxSendPacket();
-        }        
+        }  
+        comTime2 = micros();        
+    #ifdef __DEBUG_COM__
+        // Record COM Stats
+        if (comCode != COM_ERR_NODATA) {
+            comErr[comCode] += 1;
+            //Serial.print(comCnt++);
+            //Serial.print(" Tim="); Serial.print(comTime2-comTime1);
+            Serial.print(" Hea="); Serial.print(comErr[COM_ERR_HEADER]);
+            Serial.print(" Tru="); Serial.print(comErr[COM_ERR_TRUNCAT]);
+            Serial.print(" Cor="); Serial.print(comErr[COM_ERR_CORRUPT]);
+            Serial.print(" (Rx)");
+            Serial.print(" ID=");  Serial.print(comID & 0x0f);
+            Serial.print(" Len="); Serial.print(comLen);
+            Serial.print(" (Tx)");
+            Serial.print(" ID="); Serial.print(hubID);
+            Serial.print(" Len="); Serial.println(hubLen);
+        }
+    #endif
     }    
-    comTime2 = micros();
+
+    // Process commands from COM
+    if (comCode == COM_ERR_OK) {
+        popPacket(comID >> 4);
+        if (comLen) processComCMD();
+    }
+    comCode = COM_ERR_NODATA;
 }
