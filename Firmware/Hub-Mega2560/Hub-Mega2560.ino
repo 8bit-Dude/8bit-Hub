@@ -108,6 +108,10 @@ File hubFile[FILES];
 char serBuffer[PACKET];
 unsigned char serLen;
 
+////////////////////////////////
+//      PACKET functions      //
+////////////////////////////////
+
 // Define packet structure
 typedef struct packet {
     unsigned char ID;
@@ -118,19 +122,8 @@ typedef struct packet {
     struct packet* next;
 } packet_t;
 
-// Define list structure
-typedef struct list {
-    char* data;
-    struct list* next;
-} list_t;
-
-////////////////////////////////
-//      PACKET functions      //
-////////////////////////////////
-
-unsigned char txBuffer[PACKET];
-unsigned char countID, rxID, txID, rxLen=0, txLen=0;
-packet_t* hubHead = NULL;
+packet_t* packetHead = NULL;
+unsigned char packetID = 0;
 
 void pushPacket(unsigned char cmd, signed char slot) {
   // Create new packet
@@ -138,8 +131,8 @@ void pushPacket(unsigned char cmd, signed char slot) {
     packet->next = NULL;
 
     // Assign ID & Timeout
-    if (++countID>15) { countID = 1; }
-    packet->ID = countID;
+    if (++packetID>15) { packetID = 1; }
+    packet->ID = packetID;
     packet->timeout = millis() + TIMEOUT;
 
     // Copy data to packet
@@ -150,14 +143,14 @@ void pushPacket(unsigned char cmd, signed char slot) {
     memcpy(&packet->data[2], serBuffer, serLen);
     
     // Append packet at tail of linked list
-    if (!hubHead) {
-        hubHead = packet;
+    if (!packetHead) {
+        packetHead = packet;
     } else {
-        packet_t *hubTail = hubHead;
-        while (hubTail->next != NULL) {
-            hubTail = hubTail->next;
+        packet_t *packetTail = packetHead;
+        while (packetTail->next != NULL) {
+            packetTail = packetTail->next;
         }
-        hubTail->next = packet;
+        packetTail->next = packet;
     }     
 #ifdef __DEBUG_PCK__
     Serial.print("PUSH: "); Serial.println((byte)packet->ID);
@@ -165,27 +158,33 @@ void pushPacket(unsigned char cmd, signed char slot) {
 }
 
 void popPacket(unsigned char ID) {
-    if (hubHead && hubHead->ID == ID) { 
+    if (packetHead && packetHead->ID == ID) { 
         // Remove packet at head of linked list
     #ifdef __DEBUG_PCK__
-        Serial.print("POP: "); Serial.println((byte)hubHead->ID);    
+        Serial.print("POP: "); Serial.println((byte)packetHead->ID);    
     #endif
-        packet_t* next = hubHead->next;
-        free(hubHead->data); free(hubHead); 
-        hubHead = next;      
+        packet_t* next = packetHead->next;
+        free(packetHead->data); free(packetHead); 
+        packetHead = next;      
     }
 }
 
 void packetTimeout() {
   // Remove packets that have exceeded timeout
-  while (hubHead && millis() > hubHead->timeout) {
-      popPacket(hubHead->ID);
+  while (packetHead && millis() > packetHead->timeout) {
+      popPacket(packetHead->ID);
   }
 }
 
 //////////////////////////
 //    List functions    //
 //////////////////////////
+
+// Define list structure
+typedef struct list {
+    char* data;
+    struct list* next;
+} list_t;
 
 list_t* listHead;
 
@@ -341,134 +340,9 @@ void readMouse() {
 }
 
 ////////////////////////////////
-//     LYNX Communication     //
-////////////////////////////////
-
-#define COMM_ERR_OK      0
-#define COMM_ERR_NODATA  1
-#define COMM_ERR_HEADER  2 
-#define COMM_ERR_TRUNCAT 3
-#define COMM_ERR_CORRUPT 4
-
-unsigned char lynxBitPeriod = 16;   // Bauds: 62500=16 / 41666=24 / 9600=104
-unsigned long lynxTimer;
-
-void lynxSendChar(char value) {
-    unsigned char i, parity = 0, mask = 1;
-
-    // Start Bit
-    PORTD &= B11111011;
-    lynxTimer += lynxBitPeriod; while (micros()-lynxTimer < lynxBitPeriod) ;
-
-    // Value Bits
-    for (i=0; i<8; i++) {
-        if (value & mask) { 
-            PORTD |= B00000100;
-            parity++;
-        } else { 
-            PORTD &= B11111011;
-        }
-          mask = mask << 1;
-          lynxTimer += lynxBitPeriod; while (micros()-lynxTimer < lynxBitPeriod) ;
-    }
-      
-    // Parity Bit
-    if (parity % 2) {
-        PORTD &= B11111011;
-    } else {
-        PORTD |= B00000100;
-    }
-    lynxTimer += lynxBitPeriod; while (micros()-lynxTimer < lynxBitPeriod) ; 
-
-    // Stop Bit
-    PORTD |= B00000100;
-    for (i=0; i<6; i++) {   // Bauds: 41666,62500 = i<6 / 9600 = i<1
-        lynxTimer += lynxBitPeriod; while (micros()-lynxTimer < lynxBitPeriod) ;
-    }
-}
-
-void lynxSendPacket() {
-    // Do we have packet ready to send?
-    unsigned char* rxData;    
-    if (hubHead) {
-        rxID = hubHead->ID;
-        rxLen = hubHead->len;
-        rxData = hubHead->data;
-    } else {
-        rxLen = 0;
-    }
-    
-    // Pre-calculate checksum
-    unsigned char packetID = (rxID << 4) + (txID & 0x0f);
-    unsigned char checksum = packetID;
-    for (byte i=0; i<4; i++)   { checksum += joyState[i]; }
-    for (byte i=0; i<2; i++)   { checksum += mouseState[i]; }
-    for (byte i=0; i<rxLen; i++) { checksum += rxData[i]; }
-
-    // Switch pin to output
-    PORTD |= B00000100;
-    DDRD |= B00000100;
-    lynxTimer = micros();  
-    while (micros()-lynxTimer < lynxBitPeriod) ;
-
-    // Send: header, states, length, data, checksum
-    lynxSendChar(170);
-    lynxSendChar(packetID);
-    for (byte i=0; i<4; i++)   { lynxSendChar(joyState[i]); }
-    for (byte i=0; i<2; i++)   { lynxSendChar(mouseState[i]); }
-    lynxSendChar(rxLen);
-    for (byte i=0; i<rxLen; i++) { lynxSendChar(rxData[i]); }
-    lynxSendChar(checksum);
-
-    // Return pin to input and clear data sent to self
-    DDRD &= B11111011;
-    Serial2.readString();
-    //Serial2.readBytes(data, rxLen+3);
-}
-
-unsigned char lynxRecvPacket() {
-    // Receive packet from Lynx
-    unsigned char footer, checksum;
-  
-    // Have we got data?
-    if (!Serial2.available()) { return COMM_ERR_NODATA; }
-
-    // Check Header
-    if (Serial2.read() != 170) { return COMM_ERR_HEADER; }
-
-    // Get RecvID
-    if (!Serial2.readBytes(&txID, 1)) { return COMM_ERR_TRUNCAT; }
-
-    // Get Length
-    if (!Serial2.readBytes(&txLen, 1)) { return COMM_ERR_TRUNCAT; }
-
-    // Get Buffer
-    if (txLen > 0) {
-        if (!Serial2.readBytes(txBuffer, txLen)) { return COMM_ERR_TRUNCAT; }
-    }
-
-    // Get Footer
-    if (!Serial2.readBytes(&footer, 1)) { return COMM_ERR_TRUNCAT; }
-
-    // Verify checksum
-    checksum = txID;
-    for (byte i=0; i<txLen; i++) { 
-        checksum += txBuffer[i]; 
-    }
-    if (footer != checksum) { return COMM_ERR_CORRUPT; }
-
-    // Was previous packet acknowledged?
-    popPacket(txID >> 4);
-    
-    // All good!
-    txBuffer[txLen] = 0;
-    return COMM_ERR_OK;
-}
-
-////////////////////////////////
 //        JPG functions       //
 ////////////////////////////////
-
+/*
 const unsigned char lynxPaletteR[] = {165,  66,  66,  49,  49,  33,  33, 115, 231, 247, 247, 214, 132, 247, 132, 0};
 const unsigned char lynxPaletteG[] = { 16,  49, 132, 198, 198, 132,  82,  82, 115, 231, 148,  49,  33, 247, 132, 0};
 const unsigned char lynxPaletteB[] = {198, 181, 198, 198,  82,  33,  82,  33,  82,   0, 165,  66,  66, 247, 132, 0};
@@ -598,7 +472,7 @@ void decodeJPG(unsigned char* filename) {
     Serial.print("Render time: "); Serial.print(millis()-timer); Serial.println(" ms");
 #endif  
 }
-
+*/
 ////////////////////////////////
 //        SD functions        //
 ////////////////////////////////
@@ -672,6 +546,8 @@ void displayMode() {
     lcd.print("Mode:               ");
     lcd.setCursor(5,1);
     lcd.print(modeString[hubMode]);
+    Serial.print("Hub Mode: ");
+    Serial.println(modeString[hubMode]);    
 }
 
 void displaySD() {
@@ -691,27 +567,302 @@ void displayIP() {
     lcd.print(serBuffer);
 }
 
+//////////////////////
+//    COM Packets   //
+//////////////////////
+
+#define COM_ERR_OK      0
+#define COM_ERR_NODATA  1
+#define COM_ERR_HEADER  2 
+#define COM_ERR_TRUNCAT 3
+#define COM_ERR_CORRUPT 4
+
+volatile unsigned char checksum;
+volatile unsigned char hubID, hubLen, *hubData;
+volatile unsigned char comID = 0, comLen = 0, comBuffer[PACKET];
+volatile byte comCode = COM_ERR_NODATA;
+
+void setupCOM() {
+    // Setup COM Connection
+    switch (hubMode) {
+    case MODE_LYNX:
+        // Setup Serial 2 on pins 16/17
+        Serial2.begin(62500, SERIAL_8N2);   // Lynx comm (Bauds 62500, 41666, 9600)
+        while (!Serial2) { }
+        Serial2.setTimeout(10);
+        Serial2.flush();
+        Serial2.readString();
+        break;
+    case MODE_ORIC:
+        oricPort(INPUT);
+        pinMode(2, OUTPUT);       // ACKNOW
+        digitalWrite(2, LOW);          
+        pinMode(3, INPUT_PULLUP); // STROBE
+        attachInterrupt(digitalPinToInterrupt(3), oricRecvPacket, FALLING);    
+    }
+}
+
+void preparePacket() {
+    // Do we have packet ready to send?
+    if (packetHead) {
+        hubID = packetHead->ID;
+        hubLen = packetHead->len;
+        hubData = packetHead->data;
+    } else {
+        hubLen = 0;
+    }
+    
+    // Pre-calculate checksum
+    hubID = (hubID << 4) + (comID & 0x0f);
+    checksum = hubID;
+    for (byte i=0; i<4; i++)   { checksum += joyState[i]; }
+    for (byte i=0; i<2; i++)   { checksum += mouseState[i]; }
+    for (byte i=0; i<hubLen; i++) { checksum += hubData[i]; }
+}
+
+void checkPacket() {
+    // Verify checksum
+    unsigned char checksum = comID;
+    for (byte i=0; i<comLen; i++)
+        checksum += comBuffer[i]; 
+    if (comBuffer[comLen] != checksum) { 
+        comCode = COM_ERR_CORRUPT;
+        return;
+    }
+    
+    // All good!
+    comBuffer[comLen-1] = 0;
+    comCode = COM_ERR_OK;
+}
+
 ////////////////////////////////
-//    SERIAL Communication    //
+//     LYNX Communication     //
 ////////////////////////////////
 
+unsigned char lynxBitPeriod = 16;   // Bauds: 62500=16 / 41666=24 / 9600=104
+unsigned long lynxTimer;
+
+void lynxWrite(char value) {
+    unsigned char i, parity = 0, mask = 1;
+
+    // Start Bit
+    PORTD &= B11111011;
+    lynxTimer += lynxBitPeriod; while (micros()-lynxTimer < lynxBitPeriod) ;
+
+    // Value Bits
+    for (i=0; i<8; i++) {
+        if (value & mask) { 
+            PORTD |= B00000100;
+            parity++;
+        } else { 
+            PORTD &= B11111011;
+        }
+          mask = mask << 1;
+          lynxTimer += lynxBitPeriod; while (micros()-lynxTimer < lynxBitPeriod) ;
+    }
+      
+    // Parity Bit
+    if (parity % 2) {
+        PORTD &= B11111011;
+    } else {
+        PORTD |= B00000100;
+    }
+    lynxTimer += lynxBitPeriod; while (micros()-lynxTimer < lynxBitPeriod) ; 
+
+    // Stop Bit
+    PORTD |= B00000100;
+    for (i=0; i<6; i++) {   // Bauds: 41666,62500 = i<6 / 9600 = i<1
+        lynxTimer += lynxBitPeriod; while (micros()-lynxTimer < lynxBitPeriod) ;
+    }
+}
+
+void lynxSendPacket() {
+    // Switch pin to output
+    PORTD |= B00000100;
+    DDRD |= B00000100;
+    lynxTimer = micros();  
+    while (micros()-lynxTimer < lynxBitPeriod) ;
+
+    // Send: header, states, length, data, checksum
+    lynxWrite(170);
+    lynxWrite(hubID);
+    for (byte i=0; i<4; i++)   { lynxWrite(joyState[i]); }
+    for (byte i=0; i<2; i++)   { lynxWrite(mouseState[i]); }
+    lynxWrite(hubLen);
+    for (byte i=0; i<hubLen; i++) { lynxWrite(hubData[i]); }
+    lynxWrite(checksum);
+
+    // Return pin to input and clear data sent to self
+    DDRD &= B11111011;
+    Serial2.readString();
+    //Serial2.readBytes(data, rxLen+3);
+}
+
+unsigned char lynxRecvPacket() {  
+    // Have we got data?
+    if (!Serial2.available()) { return COM_ERR_NODATA; }
+
+    // Check Header
+    if (Serial2.read() != 170) { return COM_ERR_HEADER; }
+
+    // Get RecvID
+    if (!Serial2.readBytes((unsigned char*)&comID, 1)) { return COM_ERR_TRUNCAT; }
+
+    // Get Length
+    if (!Serial2.readBytes((unsigned char*)&comLen, 1)) { return COM_ERR_TRUNCAT; }
+
+    // Get Buffer+Footer
+    if (!Serial2.readBytes((unsigned char*)comBuffer, comLen+1)) { return COM_ERR_TRUNCAT; }
+}
+
+////////////////////////////////
+//     ORIC Communication     //
+////////////////////////////////
+
+// Swith data pins status (I/O)
+void oricPort(byte state) {
+    // Faster pin switching (takes 4us)
+    if (state == OUTPUT) {
+        DDRG |= _BV(PG5);
+        DDRE |= _BV(PE3);
+        DDRH |= _BV(PH3);
+        DDRH |= _BV(PH4);
+        DDRD |= _BV(PD2);
+        DDRD |= _BV(PD3);
+        DDRH |= _BV(PH0);    
+        DDRH |= _BV(PH1);    
+    } else {
+        DDRG &= ~_BV(PG5);
+        DDRE &= ~_BV(PE3);
+        DDRH &= ~_BV(PH3);
+        DDRH &= ~_BV(PH4);
+        DDRD &= ~_BV(PD2);
+        DDRD &= ~_BV(PD3);
+        DDRH &= ~_BV(PH0);    
+        DDRH &= ~_BV(PH1);    
+    }
+}
+
+// Read from pins
+unsigned char oricRead() {
+    // Faster pin reading (takes 8us)
+    unsigned char input = 0;
+    input |= ((PING & _BV(PG5))>0) << 0;
+    input |= ((PINE & _BV(PE3))>0) << 1;
+    input |= ((PINH & _BV(PH3))>0) << 2;
+    input |= ((PINH & _BV(PH4))>0) << 3;
+    input |= ((PIND & _BV(PD2))>0) << 4;
+    input |= ((PIND & _BV(PD3))>0) << 5;
+    input |= ((PINH & _BV(PH0))>0) << 6;
+    input |= ((PINH & _BV(PH1))>0) << 7;
+    return input;   
+}
+
+// Write to pins
+void oricWrite(byte value) {
+    // Faster pin writing
+    if (value &   1) { PORTG |= _BV(PG5); } else { PORTG &= ~_BV(PG5); }
+    if (value &   2) { PORTE |= _BV(PE3); } else { PORTE &= ~_BV(PE3); }
+    if (value &   4) { PORTH |= _BV(PH3); } else { PORTH &= ~_BV(PH3); }
+    if (value &   8) { PORTH |= _BV(PH4); } else { PORTH &= ~_BV(PH4); }
+    if (value &  16) { PORTD |= _BV(PD2); } else { PORTD &= ~_BV(PD2); }
+    if (value &  32) { PORTD |= _BV(PD3); } else { PORTD &= ~_BV(PD3); }
+    if (value &  64) { PORTH |= _BV(PH0); } else { PORTH &= ~_BV(PH0); }
+    if (value & 128) { PORTH |= _BV(PH1); } else { PORTH &= ~_BV(PH1); }
+
+    // Blip ACKNOW
+    PORTE |= _BV(PE4);
+    delayMicroseconds(6);
+    PORTE &= ~_BV(PE4);
+    delayMicroseconds(200);
+}
+
+void oricSendPacket() {
+    // Switch pins to output
+    oricPort(OUTPUT);
+    delayMicroseconds(64);
+
+    // Send: header, states, length, data, checksum
+    oricWrite(170);
+    oricWrite(hubID);
+    for (byte i=0; i<4; i++)   { oricWrite(joyState[i]); }
+    for (byte i=0; i<2; i++)   { oricWrite(mouseState[i]); }
+    oricWrite(hubLen);
+    for (byte i=0; i<hubLen; i++) { oricWrite(hubData[i]); }
+    oricWrite(checksum);
+    
+    // Switch pins back to input
+    oricPort(INPUT);
+}
+
+volatile unsigned char hasHeader, hasID, hasLen, rcvLen; 
+
+void oricRecvPacket() {
+    // Read byte from computer  
+    unsigned char data = oricRead();
+
+    // Check header
+    if (!hasHeader) {
+        switch (data) {
+        case 85:
+            preparePacket();
+            oricSendPacket(); 
+            return;
+        case 170:
+            hasHeader = 1; 
+            return;
+        default:
+            return;
+        }
+    }
+  
+    // Check ID
+    if (!hasID) {
+      comID = data;
+      hasID = 1;
+      return;
+    }
+  
+    // Check for length
+    if (!hasLen) {
+      comLen = data;
+      rcvLen = 0;
+      hasLen = 1;
+      return;
+    }
+  
+    // Add data to buffer
+    comBuffer[rcvLen++] = data;
+  
+    // Check if packet was fully received (including extra byte for checksum)
+    if (rcvLen < comLen+1) { return; }
+  
+    // Check packet and reset state (it will be processed in main loop)
+    checkPacket();
+    hasHeader = 0;
+    hasID = 0;
+    hasLen = 0;
+}
+
+/////////////////////////////
+//    SERIAL Connection    //
+/////////////////////////////
+
 void setupSERIAL() {
-    Serial.begin(115200);               // PC comm.
-    Serial2.begin(62500, SERIAL_8N2);   // Lynx comm (Bauds 62500, 41666, 9600)
-    Serial3.begin(115200);              // ESP8266 comm.
+    // Setup PC/Wifi Connection
+    Serial.begin(115200);               // PC conn.
+    Serial3.begin(115200);              // ESP8266 conn.
     while (!Serial) { }
-    while (!Serial2) { }
     while (!Serial3) { }
     Serial.setTimeout(10);
-    Serial2.setTimeout(10);
     Serial3.setTimeout(10);
     Serial.flush();
-    Serial2.flush();
     Serial3.flush();
     Serial.readString();
-    Serial2.readString();
     Serial3.readString();
-    Serial.println("-System Reboot-");
+
+    // Display Reboot Message
+    Serial.println("-System Reboot-");    
 }
 
 void writeCMD(char cmd) {
@@ -927,7 +1078,7 @@ void processComCMD() {
     unsigned char tmp;
     unsigned int offset;
     unsigned long length;   
-    lastComCMD = txBuffer[0];
+    lastComCMD = comBuffer[0];
 #ifdef __DEBUG_CMD__
     Serial.print("COM: ");
     Serial.println(cmdString[lastComCMD]);
@@ -935,12 +1086,11 @@ void processComCMD() {
     switch (lastComCMD) {  
     case HUB_SYS_RESET:
         // Pop any left-over packet, and close files                
-        while (hubHead) popPacket(hubHead->ID);
+        while (packetHead) popPacket(packetHead->ID);
         for (byte i=0; i<FILES; i++) {
             if (hubFile[i]) hubFile[i].close();
-        }         
-        countID = 0;
-        rxID = 0;
+        }
+        packetID = 0;
         break;
 
     case HUB_SYS_IP:
@@ -952,67 +1102,67 @@ void processComCMD() {
 
     case HUB_FILE_OPEN:
         // Check if file was previously opened
-        if (hubFile[txBuffer[1]])
-            hubFile[txBuffer[1]].close();
+        if (hubFile[comBuffer[1]])
+            hubFile[comBuffer[1]].close();
         
         // Open file (modes are 0:read, 1:write, 2:append)
-        switch (txBuffer[2]) {
+        switch (comBuffer[2]) {
         case 0:                
-            hubFile[txBuffer[1]] = SD.open(&txBuffer[3], FILE_READ); 
+            hubFile[comBuffer[1]] = SD.open(&comBuffer[3], FILE_READ); 
             break;
         case 1:
-            if (SD.exists(&txBuffer[3])) { SD.remove(&txBuffer[3]); }
-            hubFile[txBuffer[1]] = SD.open(&txBuffer[3], FILE_WRITE); 
+            if (SD.exists(&comBuffer[3])) { SD.remove(&comBuffer[3]); }
+            hubFile[comBuffer[1]] = SD.open(&comBuffer[3], FILE_WRITE); 
             break;
         case 2:                
-            hubFile[txBuffer[1]] = SD.open(&txBuffer[3], FILE_WRITE);
+            hubFile[comBuffer[1]] = SD.open(&comBuffer[3], FILE_WRITE);
             break;
         }
 
         // Send back file size
-        length = hubFile[txBuffer[1]].size();
+        length = hubFile[comBuffer[1]].size();
         memcpy(serBuffer, (char*)&length, 4); serLen = 4;
-        pushPacket(HUB_FILE_OPEN, txBuffer[1]);
+        pushPacket(HUB_FILE_OPEN, comBuffer[1]);
         break;
 
     case HUB_FILE_SEEK:
         // Seek file position (offset from beginning)
-        offset = (txBuffer[3] * 256) + txBuffer[2];
-        if (hubFile[txBuffer[1]]) { 
-            hubFile[txBuffer[1]].seek(offset);
+        offset = (comBuffer[3] * 256) + comBuffer[2];
+        if (hubFile[comBuffer[1]]) { 
+            hubFile[comBuffer[1]].seek(offset);
         }
         break;
 
     case HUB_FILE_READ:
-        if (hubFile[txBuffer[1]]) {
+        if (hubFile[comBuffer[1]]) {
             // Read chunk from file
             serLen = 0;
-            while (hubFile[txBuffer[1]].available() && tmp<txBuffer[2]) {
-                serBuffer[serLen++] = hubFile[txBuffer[1]].read();
+            while (hubFile[comBuffer[1]].available() && tmp<comBuffer[2]) {
+                serBuffer[serLen++] = hubFile[comBuffer[1]].read();
             }
             pushPacket(HUB_FILE_READ, -1);
         }
         break;
 
     case HUB_FILE_WRITE:
-        if (hubFile[txBuffer[1]]) hubFile[txBuffer[1]].write(&txBuffer[2], txLen-3);
+        if (hubFile[comBuffer[1]]) hubFile[comBuffer[1]].write((unsigned char*)&comBuffer[2], comLen-3);
         break;
 
     case HUB_FILE_CLOSE:
-        if (hubFile[txBuffer[1]]) hubFile[txBuffer[1]].close();
+        if (hubFile[comBuffer[1]]) hubFile[comBuffer[1]].close();
         break;                          
       
     case HUB_UDP_OPEN:
         writeCMD(HUB_UDP_OPEN);
-        writeChar(txBuffer[1]); writeChar(txBuffer[2]);
-        writeChar(txBuffer[3]); writeChar(txBuffer[4]);
-        writeInt(txBuffer[5]+256*txBuffer[6]); 
-        writeInt(txBuffer[7]+256*txBuffer[8]);
+        writeChar(comBuffer[1]); writeChar(comBuffer[2]);
+        writeChar(comBuffer[3]); writeChar(comBuffer[4]);
+        writeInt(comBuffer[5]+256*comBuffer[6]); 
+        writeInt(comBuffer[7]+256*comBuffer[8]);
         break;
 
     case HUB_UDP_SEND:
         writeCMD(HUB_UDP_SEND);
-        writeBuffer(&txBuffer[1], txLen-1);
+        writeBuffer(&comBuffer[1], comLen-1);
         break;
 
     case HUB_UDP_CLOSE:
@@ -1022,15 +1172,15 @@ void processComCMD() {
     case HUB_TCP_OPEN:
         // Send TCP init params to ESP
         writeCMD(HUB_TCP_OPEN);
-        writeChar(txBuffer[1]); writeChar(txBuffer[2]);
-        writeChar(txBuffer[3]); writeChar(txBuffer[4]);
-        writeInt(txBuffer[5]+256*txBuffer[6]); 
+        writeChar(comBuffer[1]); writeChar(comBuffer[2]);
+        writeChar(comBuffer[3]); writeChar(comBuffer[4]);
+        writeInt(comBuffer[5]+256*comBuffer[6]); 
         break;
 
     case HUB_TCP_SEND:
         // Send TCP packet to ESP
         writeCMD(HUB_TCP_SEND);
-        writeBuffer(&txBuffer[1], txLen-1);
+        writeBuffer(&comBuffer[1], comLen-1);
         break;
 
     case HUB_TCP_CLOSE:
@@ -1040,20 +1190,20 @@ void processComCMD() {
     case HUB_WEB_OPEN:
         // Send WEB init params to ESP
         writeCMD(HUB_WEB_OPEN);
-        writeInt(txBuffer[1]+256*txBuffer[2]); // Port
-        writeInt(txBuffer[3]+256*txBuffer[4]); // TimeOut
+        writeInt(comBuffer[1]+256*comBuffer[2]); // Port
+        writeInt(comBuffer[3]+256*comBuffer[4]); // TimeOut
         break; 
 
     case HUB_WEB_HEADER:
         // Send TCP packet to ESP
         writeCMD(HUB_WEB_HEADER);
-        writeBuffer(&txBuffer[1], txLen-1);                 
+        writeBuffer(&comBuffer[1], comLen-1);                 
         break;
 
     case HUB_WEB_BODY:
         // Send TCP packet to ESP
         writeCMD(HUB_WEB_BODY);
-        writeBuffer(&txBuffer[1], txLen-1);                 
+        writeBuffer(&comBuffer[1], comLen-1);                 
         break;
 
     case HUB_WEB_SEND:
@@ -1602,7 +1752,7 @@ void readConfig() {
     if (!strlen(ssid) && !strlen(pswd)) {
         strcpy(ssid, "8bit-Unity");
         strcpy(pswd, "0123456789"); 
-    }    
+    }
 }
 
 void writeConfig() {
@@ -1790,6 +1940,7 @@ void setup() {
     lcd.setCursor(0,1);
     lcd.print("Booting...          ");
     setupESP();
+    setupCOM();
     setupSD();
 
     // Check for Updates
@@ -1802,8 +1953,9 @@ void setup() {
 }
 
 #ifdef __DEBUG_COM__
-  int count, err[5];
+  int comCnt, comErr[5];
 #endif
+long comTime1, comTime2;
 
 void loop() { 
     // Check packets time-out
@@ -1813,40 +1965,45 @@ void loop() {
     readJOY(); 
       
     // Process commands from ESP8266
-    if (Serial3.find("CMD")) processEspCMD();
+    if (Serial3.find("CMD")) 
+        processEspCMD();
 
-    // Send COM data
-    byte code = COMM_ERR_NODATA;
-    long time1 = micros();
-    switch (hubMode) {
-    case MODE_LYNX:
-        // Process Lynx Communication
-        code = lynxRecvPacket();
-        if (code != COMM_ERR_NODATA) {
-            // Send reply immediately (almost)
-            delayMicroseconds(6*lynxBitPeriod);   // Bauds: 62500=6* / 41666=8* / 9600=2*
-            lynxSendPacket();
-            long time2 = micros();
-        }
-        break;
+    // Process commands from COM
+    if (comCode == COM_ERR_OK) {
+        popPacket(comID >> 4);
+        processComCMD();
     }
-
-    // Process received COM data
-    if (code != COMM_ERR_NODATA) {     
-        if (txLen) processComCMD();
-    #ifdef __DEBUG_COM__
-        err[code] += 1;
-        //Serial.print(count++);
+#ifdef __DEBUG_COM__
+    // Record COM Stats
+    if (comCode != COM_ERR_NODATA) {
+        comErr[comCode] += 1;
+        //Serial.print(comCnt++);
         Serial.print("(Tx)");
-        Serial.print(" Tim="); Serial.print(time2-time1);
-        Serial.print(" Hea="); Serial.print(err[COMM_ERR_HEADER]);
-        Serial.print(" Tru="); Serial.print(err[COMM_ERR_TRUNCAT]);
-        Serial.print(" Cor="); Serial.print(err[COMM_ERR_CORRUPT]);
-        Serial.print(" ID=");  Serial.print(txID & 0x0f);
-        Serial.print(" Len="); Serial.print(txLen);
+        Serial.print(" Tim="); Serial.print(comTime2-comTime1);
+        Serial.print(" Hea="); Serial.print(comErr[COM_ERR_HEADER]);
+        Serial.print(" Tru="); Serial.print(comErr[COM_ERR_TRUNCAT]);
+        Serial.print(" Cor="); Serial.print(comErr[COM_ERR_CORRUPT]);
+        Serial.print(" ID=");  Serial.print(comID & 0x0f);
+        Serial.print(" Len="); Serial.print(comLen);
         Serial.print(" (Rx)");
         Serial.print(" ID="); Serial.print(rxID & 0x0f);
         Serial.print(" Len="); Serial.println(rxLen);
-    #endif     
     }
+#endif             
+    comCode = COM_ERR_NODATA;
+
+    // Process COM I/O
+    comTime1 = micros();
+    if (hubMode == MODE_LYNX) {
+        // Process Lynx Communication
+        lynxRecvPacket();
+        checkPacket();
+        if (comCode == COM_ERR_OK) {
+            // Send reply immediately (almost)
+            delayMicroseconds(6*lynxBitPeriod);   // Bauds: 62500=6* / 41666=8* / 9600=2*
+            preparePacket();
+            lynxSendPacket();
+        }        
+    }    
+    comTime2 = micros();
 }
