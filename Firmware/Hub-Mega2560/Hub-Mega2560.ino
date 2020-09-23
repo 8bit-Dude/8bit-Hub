@@ -578,7 +578,7 @@ void displayIP() {
 #define COM_ERR_CORRUPT 4
 
 volatile unsigned char checksum;
-volatile unsigned char hubID, hubLen, *hubData;
+volatile unsigned char hubID, hubLen, *hubBuffer;
 volatile unsigned char comID = 0, comLen = 0, comBuffer[PACKET];
 volatile byte comCode = COM_ERR_NODATA;
 
@@ -607,7 +607,7 @@ void preparePacket() {
     if (packetHead) {
         hubID = packetHead->ID;
         hubLen = packetHead->len;
-        hubData = packetHead->data;
+        hubBuffer = packetHead->data;
     } else {
         hubLen = 0;
     }
@@ -616,12 +616,12 @@ void preparePacket() {
    checksum = (hubID << 4) + (comID & 0x0f);
     for (byte i=0; i<4; i++)   { checksum += joyState[i]; }
     for (byte i=0; i<2; i++)   { checksum += mouseState[i]; }
-    for (byte i=0; i<hubLen; i++) { checksum += hubData[i]; }
+    for (byte i=0; i<hubLen; i++) { checksum += hubBuffer[i]; }
 }
 
 void checkPacket() {
     // Verify checksum
-    unsigned char checksum = comID;
+    checksum = comID;
     for (byte i=0; i<comLen; i++)
         checksum += comBuffer[i]; 
     if (comBuffer[comLen] != checksum) { 
@@ -630,7 +630,7 @@ void checkPacket() {
     }
     
     // All good!
-    comBuffer[comLen-1] = 0;
+    comBuffer[comLen] = 0;
     comCode = COM_ERR_OK;
 }
 
@@ -688,7 +688,7 @@ void lynxSendPacket() {
     for (byte i=0; i<4; i++)   { lynxWrite(joyState[i]); }
     for (byte i=0; i<2; i++)   { lynxWrite(mouseState[i]); }
     lynxWrite(hubLen);
-    for (byte i=0; i<hubLen; i++) { lynxWrite(hubData[i]); }
+    for (byte i=0; i<hubLen; i++) { lynxWrite(hubBuffer[i]); }
     lynxWrite(checksum);
 
     // Return pin to input and clear data sent to self
@@ -790,7 +790,7 @@ void oricSendPacket() {
     for (byte i=0; i<4; i++)   { oricWrite(joyState[i]); }
     for (byte i=0; i<2; i++)   { oricWrite(mouseState[i]); }
     oricWrite(hubLen);
-    for (byte i=0; i<hubLen; i++) { oricWrite(hubData[i]); }
+    for (byte i=0; i<hubLen; i++) { oricWrite(hubBuffer[i]); }
     oricWrite(checksum);
     
     // Switch pins back to input
@@ -1033,8 +1033,11 @@ char lastComCMD;
 void processEspCMD() {
     lastEspCMD = readChar();
 #ifdef __DEBUG_CMD__
-    Serial.print("ESP: ");
-    Serial.println(cmdString[lastEspCMD]);
+    Serial.print("ESP: "); Serial.print(cmdString[lastEspCMD]); Serial.print(": ");
+    for (byte i=0; i<espLen; i++) {
+        Serial.print(espBuffer[i], DEC); Serial.print(",");
+    }
+    Serial.print("\n");
 #endif
     switch (lastEspCMD) {
     case HUB_SYS_IP:
@@ -1082,8 +1085,11 @@ void processComCMD() {
     unsigned long length;   
     lastComCMD = comBuffer[0];
 #ifdef __DEBUG_CMD__
-    Serial.print("COM: ");
-    Serial.println(cmdString[lastComCMD]);
+    Serial.print("COM: "); Serial.print(cmdString[lastComCMD]); Serial.print(": ");
+    for (byte i=0; i<comLen; i++) {
+        Serial.print(comBuffer[i], DEC); Serial.print(",");
+    }
+    Serial.print("\n");
 #endif
     switch (lastComCMD) {  
     case HUB_SYS_RESET:
@@ -1982,25 +1988,25 @@ void loop() {
             preparePacket();
             lynxSendPacket();
         }  
-        comTime2 = micros();        
-    #ifdef __DEBUG_COM__
-        // Record COM Stats
-        if (comCode != COM_ERR_NODATA) {
-            comErr[comCode] += 1;
-            //Serial.print(comCnt++);
-            //Serial.print(" Tim="); Serial.print(comTime2-comTime1);
-            Serial.print(" Hea="); Serial.print(comErr[COM_ERR_HEADER]);
-            Serial.print(" Tru="); Serial.print(comErr[COM_ERR_TRUNCAT]);
-            Serial.print(" Cor="); Serial.print(comErr[COM_ERR_CORRUPT]);
-            Serial.print(" (Rx)");
-            Serial.print(" ID=");  Serial.print(comID & 0x0f);
-            Serial.print(" Len="); Serial.print(comLen);
-            Serial.print(" (Tx)");
-            Serial.print(" ID="); Serial.print(hubID);
-            Serial.print(" Len="); Serial.println(hubLen);
-        }
-    #endif
+        comTime2 = micros();
     }    
+#ifdef __DEBUG_COM__
+    // Display COM Stats
+    if (comCode != COM_ERR_NODATA) {
+        comErr[comCode] += 1;
+        //Serial.print(comCnt++);
+        //Serial.print(" Tim="); Serial.print(comTime2-comTime1);
+        Serial.print(" Hea="); Serial.print(comErr[COM_ERR_HEADER]);
+        Serial.print(" Tru="); Serial.print(comErr[COM_ERR_TRUNCAT]);
+        Serial.print(" Cor="); Serial.print(comErr[COM_ERR_CORRUPT]);
+        Serial.print(" (Rx)");
+        Serial.print(" ID=");  Serial.print(comID & 0x0f);
+        Serial.print(" Len="); Serial.print(comLen);
+        Serial.print(" (Tx)");
+        Serial.print(" ID="); Serial.print(hubID);
+        Serial.print(" Len="); Serial.println(hubLen);
+    }
+#endif
 
     // Process commands from COM
     if (comCode == COM_ERR_OK) {
