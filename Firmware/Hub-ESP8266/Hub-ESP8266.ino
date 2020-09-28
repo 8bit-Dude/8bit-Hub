@@ -72,6 +72,7 @@ WiFiClient webClient;
 HTTPClient httpClient;
 char udpSlot=0, tcpSlot=0;
 uint32_t webTimer, webTimeout;
+boolean webBusy = false;
 
 // Mouse Setting
 PS2Mouse mouse;
@@ -139,6 +140,8 @@ void tcpOpen(unsigned char slot) {
 
     // Open TCP connection
     if (tcp[slot].connect(tcpIp[slot], tcpPort[slot])) {
+        tcp[slot].setNoDelay(true);
+        tcp[slot].keepAlive(7200, 75, 9);
         reply(HUB_SYS_NOTIF, "TCP connection opened");
     } else {
         reply(HUB_SYS_ERROR, "TCP connection failed");
@@ -173,6 +176,7 @@ void tcpClose(unsigned char slot) {
 ////////////////////////////
 
 void webOpen() {            
+    webBusy = false;
     readInt(&webPort); 
     readInt(&webTimeout);
     webServer.begin(webPort);
@@ -183,42 +187,51 @@ void webReceive() {
     // Check if client is currently alive
     if (webClient) {
         // Check time-out        
-        if (millis()>webTimer) 
+        if (millis()>webTimer) { 
             webClient.stop();
+            webClient = webServer.available();
+            if (webClient) {
+                webClient.setNoDelay(true);
+                webClient.keepAlive(7200, 75, 9);
+                webTimer = millis()+webTimeout;   // set overall time-out
+                webBusy = false;
+            }
+        }            
     } else {
         // Check if someone else came along...
         webClient = webServer.available();
-        if (webClient) 
+        if (webClient) {
+            webClient.setNoDelay(true);
+            webClient.keepAlive(7200, 75, 9);
             webTimer = millis()+webTimeout;   // set overall time-out
+            webBusy = false;
+        }
     }
     
-    if (webClient) {
+    if (webClient && !webBusy) {
         // Setup request reader
-        char currentLine[256];
-        unsigned char currentLen = 0;
-        serLen = 0;
+        unsigned char webLen = 0;
+        char webBuffer[256];
 
         // Parse request
-        while (webClient.available() && millis() < webTimer) {
+        while (webClient.available() && millis()<webTimer) {
             // Retrieve incoming message byte-by-byte
             char c = webClient.read();  // read a byte, then
             if (c == '\n') {            // check if it is a newline character...
                 // Did we find the GET ... line?
-                if (!strncmp(currentLine, "GET", 3)) {
-                    // Transfer line to buffer
-                    serLen = currentLen;
-                    for (byte i=0; i<currentLen; i++)
-                        serBuffer[i] = currentLine[i];
-                    
-                    // And send to mega        
+                if (!strncmp(webBuffer, "GET", 3)) {
                     writeCMD(HUB_WEB_RECV);
-                    writeBuffer(serBuffer, serLen);
+                    writeBuffer(webBuffer, webLen);
+                    webBusy = true;
                     return;                   
                 }
-                currentLen = 0;               
-            } else if (c != '\r') {  // if you got anything else but a carriage return character,
-                currentLine[currentLen++] = c;      // add it to the end of the currentLine
-            }             
+                webBuffer[0] = 0;
+                webLen = 0;          
+            } 
+            else if (c != '\r') {  // if you got anything else but a carriage return character,
+                webBuffer[webLen++] = c;      // add it to the end of the currentLine
+            }
+            yield();             
         }
     }
 }
@@ -234,17 +247,20 @@ void webHeader() {
 
 void webBody() {       
     serLen = readBuffer(serBuffer);
-    if (webClient) webClient.write(serBuffer, serLen);
+    if (webClient) 
+        webClient.write(serBuffer, serLen);
 }
 
 void webSend() {
     if (webClient) {
         webClient.write("\r\n\r\n");
+        webBusy = false;
     }
 }
 
 void webClose() {         
     webServer.stop();
+    webServer = NULL;
     reply(HUB_SYS_NOTIF, "Web server stopped");
 }
 
@@ -312,9 +328,10 @@ void httpRead() {
 ////////////////////////////////
 
 void setupSERIAL() {  
+    Serial.setRxBufferSize(256);
     Serial.begin(115200);   // MEGA comm.
     while (!Serial) ;
-    Serial.setTimeout(10);
+    Serial.setTimeout(20);
     Serial.flush();  
     Serial.readString();
 }
@@ -343,7 +360,11 @@ void writeBuffer(char* buffer, char len) {
 
 unsigned char readChar() {
     // Get char from serial  
-    while (!Serial.available()) {}
+    uint32_t timeout = millis()+20;    
+    while (!Serial.available()) {
+        if (millis() > timeout)
+          return 0;
+    }    
     return Serial.read();
 }
 
@@ -531,7 +552,7 @@ void processCMD() {
         break;
 
       default:
-        reply(HUB_SYS_ERROR, "CMD unknown");
+        reply(HUB_SYS_ERROR, "ESP received unknown CMD");
     } 
 }
 
