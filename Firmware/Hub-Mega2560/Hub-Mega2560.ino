@@ -151,7 +151,7 @@ void pushPacket(unsigned char cmd, signed char slot) {
             packetTail = packetTail->next;
         }
         packetTail->next = packet;
-    }     
+    }
 #ifdef __DEBUG_PCK__
     Serial.print("PUSH: "); Serial.println((byte)packet->ID);
 #endif
@@ -589,7 +589,7 @@ void setupCOM() {
         // Setup Serial 2 on pins 16/17
         Serial2.begin(62500, SERIAL_8N2);   // Lynx comm (Bauds 62500, 41666, 9600)
         while (!Serial2) { }
-        Serial2.setTimeout(10);
+        Serial2.setTimeout(20);
         Serial2.flush();
         Serial2.readString();
         break;
@@ -774,15 +774,15 @@ void oricWrite(byte value) {
 
     // Blip ACKNOW
     PORTE |= _BV(PE4);
-    delayMicroseconds(6);
+    delayMicroseconds(10);
     PORTE &= ~_BV(PE4);
-    delayMicroseconds(200);
+    delayMicroseconds(250);
 }
 
 void oricSendPacket() {
     // Switch pins to output
     oricPort(OUTPUT);
-    delayMicroseconds(64);
+    delayMicroseconds(50);
 
     // Send: header, states, length, data, checksum
     oricWrite(170);
@@ -856,8 +856,8 @@ void setupSERIAL() {
     Serial3.begin(115200);              // ESP8266 conn.
     while (!Serial) { }
     while (!Serial3) { }
-    Serial.setTimeout(10);
-    Serial3.setTimeout(10);
+    Serial.setTimeout(20);
+    Serial3.setTimeout(20);
     Serial.flush();
     Serial3.flush();
     Serial.readString();
@@ -885,14 +885,13 @@ void writeBuffer(char* buffer, char len) {
     Serial3.write(buffer, len);
 }
 
-unsigned char readCMD(unsigned char cmd) {
-    if (Serial3.find("CMD") && readChar() == cmd) return 1;
-    return 0;
-}
-
 unsigned char readChar() {
     // Get char from serial  
-    while (!Serial3.available()) {}
+    uint32_t timeout = millis()+20;    
+    while (!Serial3.available()) {
+        if (millis() > timeout)
+          return 0;
+    }    
     return Serial3.read();
 }
 
@@ -902,11 +901,12 @@ void readInt(unsigned int *var) {
 }
 
 unsigned char readBuffer() {
-    serLen = readChar();
-    if (Serial3.readBytes(serBuffer, serLen) != serLen)
-        serLen = 0;
-    serBuffer[serLen] = 0;
-    return serLen;
+    unsigned char len = readChar();
+    if (Serial3.readBytes(serBuffer, len) != len)
+        len = 0;
+    serBuffer[len] = 0;
+    serLen = len;
+    return len;
 }
 
 char IP[17] = "Not connected...";
@@ -1032,13 +1032,6 @@ char lastComCMD;
 
 void processEspCMD() {
     lastEspCMD = readChar();
-#ifdef __DEBUG_CMD__
-    Serial.print("ESP: "); Serial.print(cmdString[lastEspCMD]); Serial.print(": ");
-    for (byte i=0; i<espLen; i++) {
-        Serial.print(espBuffer[i], DEC); Serial.print(",");
-    }
-    Serial.print("\n");
-#endif
     switch (lastEspCMD) {
     case HUB_SYS_IP:
         readIP();
@@ -1077,6 +1070,11 @@ void processEspCMD() {
         readHttp();
         break;                                    
     }  
+#ifdef __DEBUG_CMD__
+    Serial.print("ESP: "); 
+    Serial.print(cmdString[lastEspCMD]); Serial.print(": ");
+    Serial.println(serLen, DEC);
+#endif
 }
 
 void processComCMD() {
@@ -1084,13 +1082,6 @@ void processComCMD() {
     unsigned int offset;
     unsigned long length;   
     lastComCMD = comBuffer[0];
-#ifdef __DEBUG_CMD__
-    Serial.print("COM: "); Serial.print(cmdString[lastComCMD]); Serial.print(": ");
-    for (byte i=0; i<comLen; i++) {
-        Serial.print(comBuffer[i], DEC); Serial.print(",");
-    }
-    Serial.print("\n");
-#endif
     switch (lastComCMD) {  
     case HUB_SYS_RESET:
         // Reset packets and files                
@@ -1204,15 +1195,21 @@ void processComCMD() {
         break; 
 
     case HUB_WEB_HEADER:
-        // Send TCP packet to ESP
+        // Send WEB packet to ESP
         writeCMD(HUB_WEB_HEADER);
         writeBuffer(&comBuffer[1], comLen-1);                 
         break;
 
     case HUB_WEB_BODY:
-        // Send TCP packet to ESP
-        writeCMD(HUB_WEB_BODY);
-        writeBuffer(&comBuffer[1], comLen-1);                 
+        // Send WEB  packet to ESP
+        unsigned char packet, counter = 0;
+        while (counter < comLen-1) {
+            packet = (comLen-1)-counter;
+            if (packet > 64) packet = 64;
+            writeCMD(HUB_WEB_BODY);
+            writeBuffer(&comBuffer[1+counter], packet);                 
+            counter += packet;
+        }
         break;
 
     case HUB_WEB_SEND:
@@ -1223,7 +1220,12 @@ void processComCMD() {
     case HUB_WEB_CLOSE:
         writeCMD(HUB_WEB_CLOSE);
         break;    
-    }                                             
+    }      
+#ifdef __DEBUG_CMD__
+    Serial.print("COM: "); 
+    Serial.print(cmdString[lastComCMD]); Serial.print(": ");
+    Serial.println(comLen, DEC);
+#endif
 }
 
 ////////////////////////////////
@@ -1237,27 +1239,38 @@ void wifiVersion() {
     // Get ESP version
     writeCMD(HUB_SYS_VERSION);    
     lastEspCMD = 0;     
-    while (lastEspCMD != HUB_SYS_VERSION)
-        if (Serial3.find("CMD")) processEspCMD();
-    readBuffer();
-    memcpy(espVersion, serBuffer, 4);
+    uint32_t timeout = millis()+3000;
+    while (lastEspCMD != HUB_SYS_VERSION) {
+        if (Serial3.find("CMD")) 
+            processEspCMD();
+        if (millis() > timeout) {
+            Serial.println("Error: ESP not responding");      
+            return;
+        }
+    }
 
     // Check version was received correctly
-    if (strncmp(espVersion, "v", 1))
-        Serial.println("Error: cannot determine current ESP version.");  
+    readBuffer();
+    memcpy(espVersion, serBuffer, 4);
+    if (strncmp(espVersion, "v", 1)) {
+        Serial.println("Error: cannot determine current ESP version."); 
+        memcpy(espVersion, "?", 1);
+    }
 }
 
 unsigned char wifiScan() {
     // Scan and wait for Answer
     writeCMD(HUB_SYS_SCAN);    
-    uint32_t timeout = millis()+3000;
-    while (millis() < timeout) {
-        if (readCMD(HUB_SYS_NOTIF)) {
-            readNotif();
-            return 1;
+    uint32_t timeout = millis()+9000;
+    while (lastEspCMD != HUB_SYS_NOTIF) {
+        if (Serial3.find("CMD"))
+            processEspCMD();
+        if (millis() > timeout) {
+            Serial.println("Error: ESP not responding");      
+            return 0;
         }
     }                
-    return 0;       
+    return 1;       
 }
 
 unsigned char askUpdate(char *core, char *version, char *update) {
@@ -1290,9 +1303,15 @@ unsigned char askUpdate(char *core, char *version, char *update) {
 
 void checkUpdate() {
     // Check if we received IP...
-    while (lastEspCMD != HUB_SYS_IP)
+    uint32_t timeout = millis()+9000;    
+    while (lastEspCMD != HUB_SYS_IP) {
         if (Serial3.find("CMD"))
             lastEspCMD = readChar();
+        if (millis() > timeout) {
+            Serial.println("Error: ESP not responding");      
+            return;
+        }
+    }
     readBuffer();
     if (!strcmp(serBuffer, "Not connected..."))
         return;
@@ -1305,9 +1324,15 @@ void checkUpdate() {
 
     // Wait to receive data
     httpMode = HTTP_NULL;   
-    lastEspCMD = 0;
-    while (lastEspCMD != HUB_HTTP_READ)
-        if (Serial3.find("CMD")) processEspCMD();
+    timeout = millis()+9000;
+    while (lastEspCMD != HUB_HTTP_READ) {
+        if (Serial3.find("CMD")) 
+            processEspCMD();
+        if (millis() > timeout) {
+            Serial.println("Error: ESP not responding");      
+            return;
+        }            
+    }
     memcpy(espUpdate, &serBuffer[4], 4); espUpdate[4] = 0;
     memcpy(megaUpdate, &serBuffer[16], 4); megaUpdate[4] = 0;
     httpMode = HTTP_PACKET;   
@@ -1353,12 +1378,17 @@ void checkUpdate() {
         writeCMD(HUB_SYS_UPDATE);
         writeBuffer(urlEsp, strlen(urlEsp));
 
-        // Wait for ESP to Reboot        
-        lastEspCMD = 0;
+        // Wait for ESP to Reboot   
+        timeout = millis() + 60000;     
         while (lastEspCMD != HUB_SYS_VERSION) {
             delay(1000);
             writeCMD(HUB_SYS_VERSION);
-            if (Serial3.find("CMD")) processEspCMD();
+            if (Serial3.find("CMD")) 
+                processEspCMD();
+            if (millis() > timeout) {
+                Serial.println("Error: ESP not responding");      
+                return;
+            }                
         }
         readBuffer();
 
@@ -2007,7 +2037,6 @@ void loop() {
         Serial.print(" Len="); Serial.println(hubLen);
     }
 #endif
-
     // Process commands from COM
     if (comCode == COM_ERR_OK) {
         popPacket(comID >> 4);
