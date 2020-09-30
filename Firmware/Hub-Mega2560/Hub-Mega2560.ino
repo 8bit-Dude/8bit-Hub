@@ -582,7 +582,7 @@ void displayIP() {
 
 volatile unsigned char checksum;
 volatile unsigned char hubID, hubLen, *hubBuffer;
-volatile unsigned char comID = 0, comLen = 0, comBuffer[PACKET];
+volatile unsigned char prevID = 0, comID = 0, comLen = 0, comBuffer[PACKET];
 volatile byte comCode = COM_ERR_NODATA;
 
 void setupCOM() {
@@ -592,7 +592,7 @@ void setupCOM() {
         // Setup Serial 2 on pins 16/17
         Serial2.begin(62500, SERIAL_8N2);   // Lynx comm (Bauds 62500, 41666, 9600)
         while (!Serial2) { }
-        Serial2.setTimeout(10);
+        Serial2.setTimeout(30);
         Serial2.flush();
         Serial2.readString();
         break;
@@ -631,10 +631,16 @@ void checkPacket() {
         comCode = COM_ERR_CORRUPT;
         return;
     }
-    
-    // All good!
-    comBuffer[comLen] = 0;
+        
+    // All good: process ID related stuff
     comCode = COM_ERR_OK;
+    comBuffer[comLen] = 0;
+    if (comID != prevID) {
+        popPacket(comID >> 4);
+        if (comID & 0x0f == prevID & 0x0f)
+            comLen = 0;   // We already got this packet!
+        prevID = comID;
+    }
 }
 
 ////////////////////////////////
@@ -1083,9 +1089,11 @@ void processEspCMD() {
         break;                                    
     }  
 #ifdef __DEBUG_CMD__
-    Serial.print("ESP: "); 
-    Serial.print(cmdString[lastEspCMD]); Serial.print(": ");
-    Serial.println(serLen, DEC);
+    if (lastEspCMD != HUB_SYS_MOUSE) {
+        Serial.print("ESP: "); 
+        Serial.print(cmdString[lastEspCMD]); Serial.print(" (");
+        Serial.print(serLen, DEC); Serial.println(")");
+    }
 #endif
 }
 
@@ -2139,16 +2147,16 @@ void loop() {
         Serial.print(" Tru="); Serial.print(comErr[COM_ERR_TRUNCAT]);
         Serial.print(" Cor="); Serial.print(comErr[COM_ERR_CORRUPT]);
         Serial.print(" (Rx)");
-        Serial.print(" ID=");  Serial.print(comID & 0x0f);
+        Serial.print(" ID=C");  Serial.print(comID & 0x0f);
+        Serial.print(",H"); Serial.print(comID >> 4);
         Serial.print(" Len="); Serial.print(comLen);
         Serial.print(" (Tx)");
-        Serial.print(" ID="); Serial.print(hubID);
+        Serial.print(" ID=H"); Serial.print(hubID);
         Serial.print(" Len="); Serial.println(hubLen);
     }
 #endif
     // Process commands from COM
     if (comCode == COM_ERR_OK) {
-        popPacket(comID >> 4);
         if (comLen) processComCMD();
     }
     comCode = COM_ERR_NODATA;
