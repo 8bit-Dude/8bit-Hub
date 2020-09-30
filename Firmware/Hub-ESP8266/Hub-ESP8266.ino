@@ -94,11 +94,8 @@ void udpOpen(unsigned char slot) {
     readInt(&listenPort);  
 
     // Open UDP port
-    if (udp[slot].begin(listenPort)) {
-        reply(HUB_SYS_NOTIF, "UDP Port Opened");
-    } else {
-        reply(HUB_SYS_ERROR, "UDP Port Error");  
-    }
+    if (!udp[slot].begin(listenPort))
+        reply(HUB_SYS_ERROR, "UDP connection failed");  
 }
 
 void udpReceive(unsigned char slot) {
@@ -123,12 +120,22 @@ void udpSend(unsigned char slot) {
 
 void udpClose(unsigned char slot) {
     udp[slot].stop();
-    reply(HUB_SYS_NOTIF, "UDP port closed");
 }
 
 ////////////////////////////
 //      TCP functions     //
 ////////////////////////////
+
+boolean tcpConnect(unsigned char slot) {
+    // Open TCP connection
+    if (tcp[slot].connect(tcpIp[slot], tcpPort[slot])) {
+        tcp[slot].setNoDelay(true);
+        tcp[slot].keepAlive(7200, 75, 9);
+        return true;
+    } else {
+        return false;
+    }
+}
 
 void tcpOpen(unsigned char slot) {            
     // Get data from Mega
@@ -137,20 +144,13 @@ void tcpOpen(unsigned char slot) {
     ip3 = readChar(); ip4 = readChar();
     tcpIp[slot] = IPAddress(ip1, ip2, ip3, ip4);
     readInt(&tcpPort[slot]); 
-
-    // Open TCP connection
-    if (tcp[slot].connect(tcpIp[slot], tcpPort[slot])) {
-        tcp[slot].setNoDelay(true);
-        tcp[slot].keepAlive(7200, 75, 9);
-        reply(HUB_SYS_NOTIF, "TCP connection opened");
-    } else {
+    if (!tcpConnect(slot)) 
         reply(HUB_SYS_ERROR, "TCP connection failed");
-    }
 }
 
 void tcpReceive(unsigned char slot) {
     if (tcp[slot].available()) {
-       // Read data from TCP
+        // Read data from TCP
         serLen = tcp[slot].read((unsigned char*)serBuffer, PACKET-1);
         serBuffer[serLen] = 0;
         
@@ -161,14 +161,18 @@ void tcpReceive(unsigned char slot) {
     }
 }
 
-void tcpSend(unsigned char slot) {        
+void tcpSend(unsigned char slot) {
+    // Get data and try to send over TCP
     serLen = readBuffer(serBuffer);
+    if (!tcp[slot].connected()) 
+        if (!tcpConnect(slot))
+            return;
     tcp[slot].write(serBuffer, serLen);
 }
 
 void tcpClose(unsigned char slot) {
-    tcp[slot].stop(); 
-    reply(HUB_SYS_NOTIF, "TCP connection closed");
+    if (tcp[slot].connected())
+        tcp[slot].stop(); 
 }
 
 ////////////////////////////
@@ -180,7 +184,6 @@ void webOpen() {
     readInt(&webPort); 
     readInt(&webTimeout);
     webServer.begin(webPort);
-    reply(HUB_SYS_NOTIF, "Web server started");
 }
 
 void webReceive() {
@@ -261,7 +264,6 @@ void webSend() {
 void webClose() {         
     webServer.stop();
     webServer = NULL;
-    reply(HUB_SYS_NOTIF, "Web server stopped");
 }
 
 ////////////////////////////
@@ -401,7 +403,6 @@ void wifiConnect(char *ssid, char *pswd) {
     unsigned long timeout = millis()+9000;
     while (WiFi.status() != WL_CONNECTED) {
         if (millis() > timeout) {
-          reply(HUB_SYS_NOTIF, "Cannot connect to Wifi..."); 
           reply(HUB_SYS_IP, "Not connected..."); 
           return;
         }
@@ -411,7 +412,6 @@ void wifiConnect(char *ssid, char *pswd) {
     // Send back IP address
     char ip[17];
     WiFi.localIP().toString().toCharArray(ip, 16);
-    reply(HUB_SYS_NOTIF, "Connected to Wifi!");
     reply(HUB_SYS_IP, ip);
 }
 
@@ -434,7 +434,7 @@ void wifiScan() {
         strcat(serBuffer, WiFi.SSID(i).c_str());
         strcat(serBuffer, "\n");
     }
-    reply(HUB_SYS_NOTIF, serBuffer);  
+    reply(HUB_SYS_SCAN, serBuffer);  
 }
 
 void updateESP() {

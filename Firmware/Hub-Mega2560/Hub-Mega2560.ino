@@ -1262,7 +1262,7 @@ unsigned char wifiScan() {
     // Scan and wait for Answer
     writeCMD(HUB_SYS_SCAN);    
     uint32_t timeout = millis()+9000;
-    while (lastEspCMD != HUB_SYS_NOTIF) {
+    while (lastEspCMD != HUB_SYS_SCAN) {
         if (Serial3.find("CMD"))
             processEspCMD();
         if (millis() > timeout) {
@@ -1534,11 +1534,17 @@ void tcpTest() {
     while (millis() < timeout) {
         if (Serial3.find("CMD") && readChar() == HUB_TCP_RECV) {
             readChar();
-            if (readBuffer()) lcd.print(serBuffer);
+            if (readBuffer()) 
+                Serial.print("TCP: ");
+                Serial.println(serBuffer);
+                lcd.print(serBuffer);
             break;
         }
     }
-    if (millis() >= timeout) lcd.print("Error!");
+    if (millis() >= timeout) {
+          Serial.println("TCP: Timeout");
+          lcd.print("Timeout");
+    }
     writeCMD(HUB_TCP_CLOSE);
 }
 
@@ -1560,11 +1566,18 @@ void udpTest() {
     while (millis() < timeout) {
         if (Serial3.find("CMD") && readChar() == HUB_UDP_RECV) {
             readChar();
-            if (readBuffer()) lcd.print(serBuffer);
+            if (readBuffer()) { 
+                Serial.print("UDP: "); 
+                Serial.println(serBuffer);
+                lcd.print(serBuffer);
+            }
             break;
         }
     }
-    if (millis() >= timeout) lcd.print("Error!");
+    if (millis() >= timeout) {
+          Serial.println("UDP: Timeout");
+          lcd.print("Timeout");
+    }
     writeCMD(HUB_UDP_CLOSE);
 }
 
