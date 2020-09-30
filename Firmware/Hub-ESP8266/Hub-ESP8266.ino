@@ -187,23 +187,14 @@ void webOpen() {
 }
 
 void webReceive() {
-    // Check if client is currently alive
-    if (webClient) {
-        // Check time-out        
-        if (millis()>webTimer) { 
+    // Check if current client has timed-out
+    if (webClient.connected() && millis()>webTimer)
             webClient.stop();
-            webClient = webServer.available();
-            if (webClient) {
-                webClient.setNoDelay(true);
-                webClient.keepAlive(7200, 75, 9);
-                webTimer = millis()+webTimeout;   // set overall time-out
-                webBusy = false;
-            }
-        }            
-    } else {
-        // Check if someone else came along...
+
+    // Check if someone new else came along...
+    if (!webClient.connected()) {
         webClient = webServer.available();
-        if (webClient) {
+        if (webClient.connected()) {
             webClient.setNoDelay(true);
             webClient.keepAlive(7200, 75, 9);
             webTimer = millis()+webTimeout;   // set overall time-out
@@ -211,7 +202,7 @@ void webReceive() {
         }
     }
     
-    if (webClient && !webBusy) {
+    if (webClient.connected() && !webBusy) {
         // Setup request reader
         unsigned char webLen = 0;
         char webBuffer[256];
@@ -241,7 +232,7 @@ void webReceive() {
 
 void webHeader() {
     serLen = readBuffer(serBuffer);
-    if (webClient) {
+    if (webClient.connected()) {
         webClient.write("HTTP/1.1 200 OK\r\nConnection: close\r\n");
         webClient.write(serBuffer, serLen);
         webClient.write("\r\n\r\n");
@@ -250,12 +241,12 @@ void webHeader() {
 
 void webBody() {       
     serLen = readBuffer(serBuffer);
-    if (webClient) 
+    if (webClient.connected()) 
         webClient.write(serBuffer, serLen);
 }
 
 void webSend() {
-    if (webClient) {
+    if (webClient.connected()) {
         webClient.write("\r\n\r\n");
         webBusy = false;
     }
@@ -263,7 +254,6 @@ void webSend() {
 
 void webClose() {         
     webServer.stop();
-    webServer = NULL;
 }
 
 ////////////////////////////
@@ -333,12 +323,12 @@ void setupSERIAL() {
     Serial.setRxBufferSize(256);
     Serial.begin(115200);   // MEGA comm.
     while (!Serial) ;
-    Serial.setTimeout(20);
+    Serial.setTimeout(10);
     Serial.flush();  
     Serial.readString();
 }
 
-void writeCMD(char cmd) {
+void writeCMD(unsigned char cmd) {
     Serial.print("CMD");
     Serial.write(cmd);
 }
@@ -355,14 +345,14 @@ void writeLong(unsigned long input) {
     Serial.write((char*)&input, 4);
 }
 
-void writeBuffer(char* buffer, char len) {
+void writeBuffer(char* buffer, unsigned char len) {
     Serial.write(len);
     Serial.write(buffer, len);
 }
 
 unsigned char readChar() {
     // Get char from serial  
-    uint32_t timeout = millis()+20;    
+    uint32_t timeout = millis()+10;    
     while (!Serial.available()) {
         if (millis() > timeout)
           return 0;
@@ -377,8 +367,17 @@ void readInt(unsigned int *buffer) {
 
 unsigned char readBuffer(char *buffer) {
     // Read buffer of known length
+    uint32_t timeout;
+    unsigned char i = 0;
     unsigned char len = readChar();
-    Serial.readBytes(buffer, len);
+    while (i<len) {
+        timeout = millis()+10;    
+        while (!Serial.available()) {
+            if (millis() > timeout)
+                return 0;
+        }    
+        buffer[i++] = Serial.read();
+    }
     buffer[len] = 0;
     return len;
 }

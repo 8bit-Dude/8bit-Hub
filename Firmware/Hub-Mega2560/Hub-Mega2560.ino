@@ -101,6 +101,9 @@ byte hubMode = MODE_LYNX;
 #define PACKET   256   // Max. packet length (bytes)
 #define TIMEOUT  1000  // Packet timout (milliseconds)
 
+// IP Params
+char IP[17] = "Not connected...";
+
 // SD Card Paramds
 File hubFile[FILES];
 
@@ -506,7 +509,7 @@ void setupSD() {
     // Try to init SD card
     Serial.println("Initializing SD card...");
     if (!SD.begin(53)) {
-        Serial.println("Error: No Micro-SD card inserted");
+        Serial.println("Notif: No Micro-SD card inserted");
         sdInserted = 0;
         return;
     }
@@ -564,7 +567,7 @@ void displayIP() {
     lcd.setCursor(0,3);
     lcd.print("IP:                 ");
     lcd.setCursor(3,3);
-    lcd.print(serBuffer);
+    lcd.print(IP);
 }
 
 //////////////////////
@@ -589,7 +592,7 @@ void setupCOM() {
         // Setup Serial 2 on pins 16/17
         Serial2.begin(62500, SERIAL_8N2);   // Lynx comm (Bauds 62500, 41666, 9600)
         while (!Serial2) { }
-        Serial2.setTimeout(20);
+        Serial2.setTimeout(10);
         Serial2.flush();
         Serial2.readString();
         break;
@@ -856,8 +859,8 @@ void setupSERIAL() {
     Serial3.begin(115200);              // ESP8266 conn.
     while (!Serial) { }
     while (!Serial3) { }
-    Serial.setTimeout(20);
-    Serial3.setTimeout(20);
+    Serial.setTimeout(10);
+    Serial3.setTimeout(10);
     Serial.flush();
     Serial3.flush();
     Serial.readString();
@@ -867,7 +870,7 @@ void setupSERIAL() {
     Serial.println("-System Reboot-");    
 }
 
-void writeCMD(char cmd) {
+void writeCMD(unsigned char cmd) {
     Serial3.print("CMD");
     Serial3.write(cmd);
 }
@@ -880,7 +883,7 @@ void writeInt(unsigned int var) {
     Serial3.write((char*)&var, 2);
 }
 
-void writeBuffer(char* buffer, char len) {
+void writeBuffer(char* buffer, unsigned char len) {
     Serial3.write(len);
     Serial3.write(buffer, len);
 }
@@ -901,15 +904,24 @@ void readInt(unsigned int *var) {
 }
 
 unsigned char readBuffer() {
+    // Read buffer of known length
+    uint32_t timeout;
+    unsigned char i = 0;
     unsigned char len = readChar();
-    if (Serial3.readBytes(serBuffer, len) != len)
-        len = 0;
+    while (i<len) {
+        timeout = millis()+10;    
+        while (!Serial3.available()) {
+            if (millis() > timeout) {
+                serLen = 0;
+                return 0;
+            }
+        }    
+        serBuffer[i++] = Serial3.read();
+    }
     serBuffer[len] = 0;
     serLen = len;
     return len;
 }
-
-char IP[17] = "Not connected...";
 
 void readIP() {
     if (readBuffer()) {
@@ -1094,7 +1106,7 @@ void processComCMD() {
         break;
 
     case HUB_SYS_IP:
-        // Send IP address
+        // Send back IP address
         strcpy(serBuffer, IP);
         serLen = strlen(IP);
         pushPacket(HUB_SYS_IP, -1);
@@ -1128,31 +1140,32 @@ void processComCMD() {
     case HUB_FILE_SEEK:
         // Seek file position (offset from beginning)
         offset = (comBuffer[3] * 256) + comBuffer[2];
-        if (hubFile[comBuffer[1]]) { 
+        if (hubFile[comBuffer[1]])
             hubFile[comBuffer[1]].seek(offset);
-        }
         break;
 
     case HUB_FILE_READ:
         if (hubFile[comBuffer[1]]) {
             // Read chunk from file
             serLen = 0;
-            while (hubFile[comBuffer[1]].available() && tmp<comBuffer[2]) {
+            while (hubFile[comBuffer[1]].available() && tmp<comBuffer[2])
                 serBuffer[serLen++] = hubFile[comBuffer[1]].read();
-            }
             pushPacket(HUB_FILE_READ, -1);
         }
         break;
 
     case HUB_FILE_WRITE:
-        if (hubFile[comBuffer[1]]) hubFile[comBuffer[1]].write((unsigned char*)&comBuffer[2], comLen-3);
+        if (hubFile[comBuffer[1]]) 
+            hubFile[comBuffer[1]].write((unsigned char*)&comBuffer[2], comLen-3);
         break;
 
     case HUB_FILE_CLOSE:
-        if (hubFile[comBuffer[1]]) hubFile[comBuffer[1]].close();
+        if (hubFile[comBuffer[1]]) 
+            hubFile[comBuffer[1]].close();
         break;                          
       
     case HUB_UDP_OPEN:
+        // Forward CMD to ESP
         writeCMD(HUB_UDP_OPEN);
         writeChar(comBuffer[1]); writeChar(comBuffer[2]);
         writeChar(comBuffer[3]); writeChar(comBuffer[4]);
@@ -1161,16 +1174,18 @@ void processComCMD() {
         break;
 
     case HUB_UDP_SEND:
+        // Forward CMD to ESP
         writeCMD(HUB_UDP_SEND);
         writeBuffer(&comBuffer[1], comLen-1);
         break;
 
     case HUB_UDP_CLOSE:
+        // Forward CMD to ESP
         writeCMD(HUB_UDP_CLOSE);
         break;
         
     case HUB_TCP_OPEN:
-        // Send TCP init params to ESP
+        // Forward CMD to ESP
         writeCMD(HUB_TCP_OPEN);
         writeChar(comBuffer[1]); writeChar(comBuffer[2]);
         writeChar(comBuffer[3]); writeChar(comBuffer[4]);
@@ -1178,53 +1193,61 @@ void processComCMD() {
         break;
 
     case HUB_TCP_SEND:
-        // Send TCP packet to ESP
+        // Forward CMD to ESP
         writeCMD(HUB_TCP_SEND);
         writeBuffer(&comBuffer[1], comLen-1);
         break;
 
     case HUB_TCP_CLOSE:
+        // Forward CMD to ESP
         writeCMD(HUB_TCP_CLOSE);
         break;
 
     case HUB_WEB_OPEN:
-        // Send WEB init params to ESP
+        // Forward CMD to ESP
         writeCMD(HUB_WEB_OPEN);
         writeInt(comBuffer[1]+256*comBuffer[2]); // Port
         writeInt(comBuffer[3]+256*comBuffer[4]); // TimeOut
         break; 
 
     case HUB_WEB_HEADER:
-        // Send WEB packet to ESP
+        // Forward CMD to ESP
         writeCMD(HUB_WEB_HEADER);
         writeBuffer(&comBuffer[1], comLen-1);                 
         break;
 
     case HUB_WEB_BODY:
-        // Send WEB  packet to ESP
-        unsigned char packet, counter = 0;
-        while (counter < comLen-1) {
-            packet = (comLen-1)-counter;
-            if (packet > 64) packet = 64;
-            writeCMD(HUB_WEB_BODY);
-            writeBuffer(&comBuffer[1+counter], packet);                 
-            counter += packet;
-        }
+        // Forward CMD to ESP
+        writeCMD(HUB_WEB_BODY);
+        writeBuffer(&comBuffer[1], comLen-1);        
         break;
 
     case HUB_WEB_SEND:
-        // Send TCP packet to ESP
+        // Forward CMD to ESP
         writeCMD(HUB_WEB_SEND);
         break;
         
     case HUB_WEB_CLOSE:
+        // Forward CMD to ESP
         writeCMD(HUB_WEB_CLOSE);
-        break;    
-    }      
+        break;  
+
+    case HUB_HTTP_GET:
+        // Forward CMD to ESP
+        writeCMD(HUB_HTTP_GET);
+        writeBuffer(&comBuffer[1], comLen-1);
+        break;                                    
+
+    case HUB_HTTP_READ:
+        // Forward CMD to ESP
+        writeCMD(HUB_HTTP_READ);
+        writeChar(comBuffer[1]);
+        break;
+    }
 #ifdef __DEBUG_CMD__
     Serial.print("COM: "); 
-    Serial.print(cmdString[lastComCMD]); Serial.print(": ");
-    Serial.println(comLen, DEC);
+    Serial.print(cmdString[lastComCMD]); Serial.print(" (");
+    Serial.print(comLen-1, DEC); Serial.println(")");
 #endif
 }
 
@@ -1312,7 +1335,7 @@ void checkUpdate() {
             return;
         }
     }
-    readBuffer();
+    readIP();
     if (!strcmp(serBuffer, "Not connected..."))
         return;
     
@@ -1518,10 +1541,41 @@ void wifiTest() {
     lcd.print(serBuffer);
 }
 
+void httpTest() {
+    unsigned char url[] = "http://8bit-unity.com/test.txt";
+    lcd.setCursor(0,1); 
+    lcd.print("HTTP:");    
+    Serial.print("HTTP: ");
+
+    // Setup request
+    writeCMD(HUB_HTTP_GET);
+    writeBuffer(url, strlen(url)); 
+    writeCMD(HUB_HTTP_READ);
+    writeChar(16);
+
+    // Wait for answer
+    uint32_t timeout = millis()+3000;
+    while (millis() < timeout) {
+        if (Serial3.find("CMD") && readChar() == HUB_HTTP_READ) {
+            if (readBuffer()) {
+                Serial.println(serBuffer);
+                lcd.print(serBuffer);
+            }
+            break;
+        }
+    }
+    if (millis() >= timeout) {
+          Serial.println("Timeout");
+          lcd.print("Timeout");
+    }
+}
+
 void tcpTest() {
-    // Run TCP Test
-    lcd.setCursor(0,1);
+    lcd.setCursor(0,1); 
     lcd.print("TCP:");
+    Serial.print("TCP: ");
+    
+    // Setup request    
     writeCMD(HUB_TCP_OPEN);
     writeChar(199); writeChar(47);
     writeChar(196); writeChar(106);
@@ -1534,24 +1588,26 @@ void tcpTest() {
     while (millis() < timeout) {
         if (Serial3.find("CMD") && readChar() == HUB_TCP_RECV) {
             readChar();
-            if (readBuffer()) 
-                Serial.print("TCP: ");
+            if (readBuffer()) {
                 Serial.println(serBuffer);
                 lcd.print(serBuffer);
+            }
             break;
         }
     }
     if (millis() >= timeout) {
-          Serial.println("TCP: Timeout");
+          Serial.println("Timeout");
           lcd.print("Timeout");
     }
     writeCMD(HUB_TCP_CLOSE);
 }
 
 void udpTest() {
-    // Run UDP Test
-    lcd.setCursor(0,2);
+    lcd.setCursor(0,2); 
     lcd.print("UDP:");
+    Serial.print("UDP: "); 
+
+    // Setup request    
     writeCMD(HUB_UDP_SLOT);
     writeChar(0);
     writeCMD(HUB_UDP_OPEN);
@@ -1560,14 +1616,13 @@ void udpTest() {
     writeInt(1234); writeInt(4321);
     writeCMD(HUB_UDP_SEND);
     writeBuffer("Packet received", 16);
-
+    
     // Wait for answer
     uint32_t timeout = millis()+3000;
     while (millis() < timeout) {
         if (Serial3.find("CMD") && readChar() == HUB_UDP_RECV) {
             readChar();
             if (readBuffer()) { 
-                Serial.print("UDP: "); 
                 Serial.println(serBuffer);
                 lcd.print(serBuffer);
             }
@@ -1575,10 +1630,51 @@ void udpTest() {
         }
     }
     if (millis() >= timeout) {
-          Serial.println("UDP: Timeout");
+          Serial.println("Timeout");
           lcd.print("Timeout");
     }
     writeCMD(HUB_UDP_CLOSE);
+}
+
+// HTML content types
+const char ctImg[] = "Content-Type: image/jpg\r\nCache-Control: max-age=999999, public";
+const char ctTxt[] = "Content-Type: text/html";
+
+// Hint: max string length is 255, but better to keep below 192 bytes!
+const char htmlHead[] = "<html><center>Welcome to 8bit-Unity Web Server<br><br><img src=\"logo.jpg\" width=\"48\"><br><br><a href=\"support\">Supported</a> platforms | <a href=\"future\">Future</a> platforms";
+const char htmlSup1[] = "<br><br><table style=\"border:1px solid black;text-align:center\"><tr><td>Apple //</td><td>Atari XL/XE</td><td>Commodore 64</td><td>Oric</td><td>Lynx</td></tr><tr><td><img src=\"apple.jpg\" width=\"64\">";
+const char htmlSup2[] = "</td><td><img src=\"atari.jpg\" width=\"64\"></td><td><img src=\"c64.jpg\" width=\"64\"></td><td><img src=\"atmos.jpg\" width=\"64\"></td><td><img src=\"lynx.jpg\" width=\"64\"></td></tr></table>";
+const char htmlFut1[] = "<br><br><table style=\"border:1px solid black;text-align:center\"><tr><td>BBC</td><td>NES</td><td>MSX</td><td>CPC</td><td>...</td></tr></table>";
+const char htmlFoot[] = "<br></center></html>";
+
+void webTest() {
+    lcd.setCursor(0,2); 
+    lcd.print("WEB:");
+    Serial.println("WEB:");
+
+    // Setup WEB Server
+    writeCMD(HUB_WEB_OPEN);
+    writeInt(80);
+    writeInt(3000);
+
+    // Wait for WEB Request
+    while (1) {
+        if (Serial3.find("CMD") && readChar() == HUB_WEB_RECV) {
+            if (readBuffer()) {
+                writeCMD(HUB_WEB_HEADER); writeBuffer((char*)ctTxt, strlen(ctTxt));
+                if (!strncmp(serBuffer, "GET / ", 6)) {      
+                    writeCMD(HUB_WEB_BODY); writeBuffer((char*)htmlHead, strlen(htmlHead));
+                    writeCMD(HUB_WEB_BODY); writeBuffer((char*)htmlSup1, strlen(htmlSup1));
+                    writeCMD(HUB_WEB_BODY); writeBuffer((char*)htmlSup2, strlen(htmlSup2));
+                    writeCMD(HUB_WEB_BODY); writeBuffer((char*)htmlFoot, strlen(htmlFoot));
+                }
+                writeCMD(HUB_WEB_SEND); 
+                
+                Serial.write(serBuffer, serLen);
+                Serial.print('\n');
+            }
+        }
+    }
 }
 
 void runTests() {  
@@ -1999,9 +2095,9 @@ void setup() {
     checkUpdate();
 
     // Display status info on LCD
-    writeCMD(HUB_SYS_IP);
     displayMode();
     displaySD();
+    displayIP();
 }
 
 #ifdef __DEBUG_COM__
