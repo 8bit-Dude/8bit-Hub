@@ -16,8 +16,8 @@
 //#define __DEBUG_PCK__
 //#define __DEBUG_TCP__
 //#define __DEBUG_UDP__
+//#define __DEBUG_URL__
 //#define __DEBUG_WEB__
-//#define __DEBUG_HTTP__
 
 // Firmware Version
 char espVersion[5] = "?";
@@ -63,8 +63,8 @@ char urlVer[]  = "http://8bit-unity.com/Hub-Version.txt";
 #define HUB_WEB_BODY     53
 #define HUB_WEB_SEND     54
 #define HUB_WEB_CLOSE    55
-#define HUB_HTTP_GET     60
-#define HUB_HTTP_READ    61
+#define HUB_URL_GET      60
+#define HUB_URL_READ     61
 
 // String definitions
 #ifdef __DEBUG_CMD__
@@ -75,7 +75,7 @@ char urlVer[]  = "http://8bit-unity.com/Hub-Version.txt";
    "UDP_OPEN", "UDP_RECV", "UDP_SEND",  "UDP_CLOSE", "UDP_SLOT",   "",         "",         "",           "",          "",
    "TCP_OPEN", "TCP_RECV", "TCP_SEND",  "TCP_CLOSE", "TCP_SLOT",   "",         "",         "",           "",          "",
    "WEB_OPEN", "WEB_RECV", "WEB_HEADER","WEB_BODY",  "WEB_SEND",   "WEB_CLOSE","",         "",           "",          "",
-   "HTTP_GET", "HTTP_READ","",          "",          "",           "",         "",         "",           "",          ""};
+   "URL_GET",  "URL_READ", "",          "",          "",           "",         "",         "",           "",          ""};
 #endif
 const char* blank = "                    ";
 
@@ -84,15 +84,16 @@ const char* blank = "                    ";
 #define MAX(a,b) (a>b ? a : b)
 
 // HUB Modes
-#define MODE_C64   0
-#define MODE_ATARI 1
-#define MODE_APPLE 2
-#define MODE_ORIC  3
-#define MODE_LYNX  4
+#define MODE_NONE  0
+#define MODE_APPLE 1
+#define MODE_ATARI 2
+#define MODE_BBC   3
+#define MODE_C64   4
 #define MODE_NES   5
-#define MODE_BBC   6
-#define HUB_MODES  7
-const char* modeString[HUB_MODES] = {"C64/C128", "Atari XL/XE", "Apple //", "Oric", "Lynx", "NES", "BBC"};
+#define MODE_ORIC  6
+#define MODE_LYNX  7
+#define HUB_MODES  8
+const char* modeString[HUB_MODES] = {"Please setup", "Apple //", "Atari XL/XE", "BBC", "C64/C128", "NES", "Oric", "Lynx"};
 byte hubMode = MODE_LYNX;
 
 // COMM Params
@@ -993,31 +994,31 @@ void readWeb() {
     }   
 }
 
-////////////////////////////
-//     HTTP functions     //
-////////////////////////////
+///////////////////////////
+//     URL functions     //
+///////////////////////////
 
-#define HTTP_NULL   0
-#define HTTP_PACKET 1
-#define HTTP_UPDATE 2
+#define URL_NULL   0
+#define URL_PACKET 1
+#define URL_UPDATE 2
 
-unsigned long httpSize;
-unsigned char httpMode = HTTP_PACKET;
+unsigned long urlSize;
+unsigned char urlMode = URL_PACKET;
 
 void getHttp() {
     // Store data into packet
     if (readBuffer()) {
         unsigned char len[4];
         memcpy(len, serBuffer, 4);
-        httpSize = (unsigned long)len[0]+256L*(unsigned long)len[1]+65536L*(unsigned long)len[2]+16777216L*(unsigned long)len[3];
-        if (httpMode == HTTP_PACKET) {
+        urlSize = (unsigned long)len[0]+256L*(unsigned long)len[1]+65536L*(unsigned long)len[2]+16777216L*(unsigned long)len[3];
+        if (urlMode == URL_PACKET) {
             // Send back file size
-            memcpy(serBuffer, (char*)&httpSize, 4); serLen = 4;
-            pushPacket(HUB_HTTP_GET, -1);
+            memcpy(serBuffer, (char*)&urlSize, 4); serLen = 4;
+            pushPacket(HUB_URL_GET, -1);
         }
-    #if defined(__DEBUG_HTTP__)
-        Serial.print("HTTP GET: ");
-        Serial.print(httpSize); Serial.println(" bytes");
+    #if defined(__DEBUG_URL__)
+        Serial.print("URL GET: ");
+        Serial.print(urlSize); Serial.println(" bytes");
     #endif     
     }
 }
@@ -1025,17 +1026,17 @@ void getHttp() {
 void readHttp() {
     // Store data to Packet/OTA update
     if (readBuffer()) {
-        switch (httpMode) {
-        case HTTP_PACKET:
-            pushPacket(HUB_HTTP_READ, -1);  
+        switch (urlMode) {
+        case URL_PACKET:
+            pushPacket(HUB_URL_READ, -1);  
             break;
-        case HTTP_UPDATE:
+        case URL_UPDATE:
             for (unsigned char i=0; i<serLen; i++)
                 InternalStorage.write(serBuffer[i]);
             break;
         }
-    #if defined(__DEBUG_HTTP__)
-        Serial.print("HTTP READ: ");
+    #if defined(__DEBUG_URL__)
+        Serial.print("URL READ: ");
         Serial.print(serLen); Serial.println(" bytes");         
     #endif     
     }
@@ -1080,11 +1081,11 @@ void processEspCMD() {
         readWeb();
         break;  
 
-    case HUB_HTTP_GET:
+    case HUB_URL_GET:
         getHttp();
         break;                                    
 
-    case HUB_HTTP_READ:
+    case HUB_URL_READ:
         readHttp();
         break;                                    
     }  
@@ -1240,15 +1241,15 @@ void processComCMD() {
         writeCMD(HUB_WEB_CLOSE);
         break;  
 
-    case HUB_HTTP_GET:
+    case HUB_URL_GET:
         // Forward CMD to ESP
-        writeCMD(HUB_HTTP_GET);
+        writeCMD(HUB_URL_GET);
         writeBuffer(&comBuffer[1], comLen-1);
         break;                                    
 
-    case HUB_HTTP_READ:
+    case HUB_URL_READ:
         // Forward CMD to ESP
-        writeCMD(HUB_HTTP_READ);
+        writeCMD(HUB_URL_READ);
         writeChar(comBuffer[1]);
         break;
     }
@@ -1348,15 +1349,15 @@ void checkUpdate() {
         return;
     
     // Check latest version number
-    writeCMD(HUB_HTTP_GET);
+    writeCMD(HUB_URL_GET);
     writeBuffer(urlVer, strlen(urlVer)); 
-    writeCMD(HUB_HTTP_READ);
+    writeCMD(HUB_URL_READ);
     writeChar(20);
 
     // Wait to receive data
-    httpMode = HTTP_NULL;   
+    urlMode = URL_NULL;   
     timeout = millis()+9000;
-    while (lastEspCMD != HUB_HTTP_READ) {
+    while (lastEspCMD != HUB_URL_READ) {
         if (Serial3.find("CMD")) 
             processEspCMD();
         if (millis() > timeout) {
@@ -1366,7 +1367,7 @@ void checkUpdate() {
     }
     memcpy(espUpdate, &serBuffer[4], 4); espUpdate[4] = 0;
     memcpy(megaUpdate, &serBuffer[16], 4); megaUpdate[4] = 0;
-    httpMode = HTTP_PACKET;   
+    urlMode = URL_PACKET;   
 
     // Check version data was received correctly
     if (strncmp(espVersion, "v", 1)) {
@@ -1450,16 +1451,16 @@ void checkUpdate() {
         // Fetch update file on ESP
         lcd.setCursor(0,1); lcd.print("Updating Core...");
         Serial.println("Downloading update...");
-        writeCMD(HUB_HTTP_GET);
+        writeCMD(HUB_URL_GET);
         writeBuffer(urlMega, strlen(urlMega));
 
         // Wait to receive file size
         lastEspCMD = 0;            
-        while (lastEspCMD != HUB_HTTP_GET)
+        while (lastEspCMD != HUB_URL_GET)
             if (Serial3.find("CMD")) processEspCMD();
 
         // Check file has size
-        if (!httpSize) {
+        if (!urlSize) {
             lcd.setCursor(0,1); lcd.print("Update failed...");
             Serial.println("Error: cannot download update.");
             delay(2000);
@@ -1467,7 +1468,7 @@ void checkUpdate() {
         }
 
         // Check there is enough storage for update
-        if (!InternalStorage.open(httpSize)) {
+        if (!InternalStorage.open(urlSize)) {
             lcd.setCursor(0,1); lcd.print("Update failed...");
             Serial.println("Error: not enough space to store the update.");
             delay(2000);
@@ -1475,16 +1476,16 @@ void checkUpdate() {
         }
 
         // Get update file from ESP
-        httpMode = HTTP_UPDATE;
+        urlMode = URL_UPDATE;
         unsigned long recvSize = 0;
         while (1) {
-            // Request next http packet
-            writeCMD(HUB_HTTP_READ);
+            // Request next url packet
+            writeCMD(HUB_URL_READ);
             writeChar(160);
     
             // Wait to receive packet
             lastEspCMD = 0;
-            while (lastEspCMD != HUB_HTTP_READ)
+            while (lastEspCMD != HUB_URL_READ)
                 if (Serial3.find("CMD")) processEspCMD();
 
             // Check if packet was empty
@@ -1493,17 +1494,17 @@ void checkUpdate() {
             else
                 break;
         }
-        httpMode = HTTP_PACKET;
+        urlMode = URL_PACKET;
         
         // Close the internal storage
         InternalStorage.close();
 
         // Check size of received data
-        if (recvSize == httpSize) {
+        if (recvSize == urlSize) {
             Serial.print("Received: ");
             Serial.print(recvSize);
             Serial.print("/");
-            Serial.print(httpSize);
+            Serial.print(urlSize);
             Serial.println(" bytes");
         } else {
             lcd.setCursor(0,1); lcd.print("Update failed...");
@@ -1549,22 +1550,22 @@ void wifiTest() {
     lcd.print(serBuffer);
 }
 
-void httpTest() {
+void urlTest() {
     unsigned char url[] = "http://8bit-unity.com/test.txt";
     lcd.setCursor(0,1); 
-    lcd.print("HTTP:");    
-    Serial.print("HTTP: ");
+    lcd.print("URL:");    
+    Serial.print("URL: ");
 
     // Setup request
-    writeCMD(HUB_HTTP_GET);
+    writeCMD(HUB_URL_GET);
     writeBuffer(url, strlen(url)); 
-    writeCMD(HUB_HTTP_READ);
+    writeCMD(HUB_URL_READ);
     writeChar(16);
 
     // Wait for answer
     uint32_t timeout = millis()+3000;
     while (millis() < timeout) {
-        if (Serial3.find("CMD") && readChar() == HUB_HTTP_READ) {
+        if (Serial3.find("CMD") && readChar() == HUB_URL_READ) {
             if (readBuffer()) {
                 Serial.println(serBuffer);
                 lcd.print(serBuffer);
@@ -1813,7 +1814,7 @@ void keyboardInput(char* param) {
                 lcd.print(inputBuf);
             }
         }
-          
+        
         // Update Cursor
         lcd.setCursor(keyCol, keyRow);
         lcd.noCursor();
@@ -1900,7 +1901,7 @@ unsigned char listSelection() {
 void readConfig() {
     // Read config from eeprom
     byte i;
-    hubMode = 255-EEPROM.read(0); if (hubMode>HUB_MODES) hubMode = 0;
+    hubMode = 255-EEPROM.read(0); if (hubMode>=HUB_MODES) hubMode = 0;
     for (i=0; i<32; i++) ssid[i] = 255-EEPROM.read(32+i);
     for (i=0; i<64; i++) pswd[i] = 255-EEPROM.read(64+i);
 
@@ -2001,10 +2002,9 @@ void configMenu() {
                 case 1:
                     // Change Mode
                     delay(200);
-                    for (byte i=0; i<HUB_MODES; i++) {
+                    for (byte i=1; i<HUB_MODES; i++)
                         pushList(modeString[i]);
-                    }
-                    hubMode = listSelection();
+                    hubMode = listSelection()+1;
                     clearList();
                     changes = true;             
                     break;    

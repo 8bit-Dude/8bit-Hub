@@ -46,8 +46,8 @@ char espVersion[] = "v0.1";
 #define HUB_WEB_BODY     53
 #define HUB_WEB_SEND     54
 #define HUB_WEB_CLOSE    55
-#define HUB_HTTP_GET     60
-#define HUB_HTTP_READ    61
+#define HUB_URL_GET      60
+#define HUB_URL_READ     61
 
 // ESP Params
 #define SLOTS    16     // Number of tcp/udp handles
@@ -69,7 +69,7 @@ WiFiClient tcp[SLOTS];
 WiFiUDP    udp[SLOTS];
 WiFiServer webServer(80); 
 WiFiClient webClient;
-HTTPClient httpClient;
+HTTPClient urlClient;
 char udpSlot=0, tcpSlot=0;
 uint32_t webTimer, webTimeout;
 boolean webBusy = false;
@@ -256,62 +256,62 @@ void webClose() {
     webServer.stop();
 }
 
-////////////////////////////
-//     HTTP functions     //
-////////////////////////////
+///////////////////////////
+//     URL functions     //
+///////////////////////////
 
-File httpFile; 
+File urlFile; 
 
-void httpGet() {
-    // Check if http file handle still open?
-    if (httpFile) httpFile.close();
+void urlGet() {
+    // Check if url file handle still open?
+    if (urlFile) urlFile.close();
   
     // Stream file to flash file system
-    unsigned long httpSize;
+    unsigned long urlSize;
     serLen = readBuffer(serBuffer);
-    httpFile = SPIFFS.open("/http.tmp", "w");
-    if (httpFile) {
-        if (httpClient.begin(serBuffer)) {
-            if (httpClient.GET() == HTTP_CODE_OK) {
-                httpClient.writeToStream(&httpFile);
+    urlFile = SPIFFS.open("/url.tmp", "w");
+    if (urlFile) {
+        if (urlClient.begin(serBuffer)) {
+            if (urlClient.GET() == HTTP_CODE_OK) {
+                urlClient.writeToStream(&urlFile);
             } else {
-                reply(HUB_SYS_ERROR, "HTTP: url not found!");
+                reply(HUB_SYS_ERROR, "URL: not found!");
                 return;        
             }
-            httpClient.end();
+            urlClient.end();
         } else {
-            reply(HUB_SYS_ERROR, "HTTP: cannot connect!");
+            reply(HUB_SYS_ERROR, "URL: cannot connect!");
             return;
         }
-        httpFile.close();
+        urlFile.close();
     } else {
-        reply(HUB_SYS_ERROR, "HTTP: flash drive error!");
+        reply(HUB_SYS_ERROR, "URL: flash drive error!");
         return;
     }
     
     // Prepare file for reading
-    httpFile = SPIFFS.open("/http.tmp", "r");
-    httpSize = httpFile.size();
+    urlFile = SPIFFS.open("/url.tmp", "r");
+    urlSize = urlFile.size();
 
     // Send back file size        
-    writeCMD(HUB_HTTP_GET);    
+    writeCMD(HUB_URL_GET);    
     Serial.write(4);    
-    writeLong(httpSize);       
+    writeLong(urlSize);       
 }
 
-void httpRead() {
+void urlRead() {
     // Stream required number of bytes
     serLen = 0;
-    if (httpFile) {
+    if (urlFile) {
         // Read requested bytes, as long as there are any
         unsigned char requestLen = readChar();
-        while (httpFile.available() && serLen < requestLen) {
-            serBuffer[serLen++] = httpFile.read();
+        while (urlFile.available() && serLen < requestLen) {
+            serBuffer[serLen++] = urlFile.read();
         }
     }
     
     // Send it to mega        
-    writeCMD(HUB_HTTP_READ);    
+    writeCMD(HUB_URL_READ);    
     writeBuffer(serBuffer, serLen);   
 }
 
@@ -542,12 +542,12 @@ void processCMD() {
         webClose();
         break;  
 
-      case HUB_HTTP_GET:
-        httpGet();
+      case HUB_URL_GET:
+        urlGet();
         break;
 
-      case HUB_HTTP_READ:
-        httpRead();
+      case HUB_URL_READ:
+        urlRead();
         break;
 
       default:
