@@ -78,6 +78,7 @@ char urlVer[]  = "http://8bit-unity.com/Hub-Version.txt";
    "URL_GET",  "URL_READ", "",          "",          "",           "",         "",         "",           "",          ""};
 #endif
 const char* blank = "                    ";
+const char* fail  = "Update failed!      ";
 
 // Useful macros
 #define MIN(a,b) (a>b ? b : a)
@@ -1372,20 +1373,14 @@ void checkUpdate() {
     // Check version data was received correctly
     if (strncmp(espVersion, "v", 1)) {
         Serial.println("Error: cannot determine current ESP version.");  
-        lcd.setCursor(0,1); lcd.print("Update error...");
-        delay(1000);
         return;
     }
     if (strncmp(espUpdate, "v", 1)) {
         Serial.println("Error: cannot determine latest ESP version.");
-        lcd.setCursor(0,1); lcd.print("Update error...");
-        delay(1000);
         return;
     }    
     if (strncmp(megaUpdate, "v", 1)) {
         Serial.println("Error: cannot determine latest MEGA version.");
-        lcd.setCursor(0,1); lcd.print("Update error...");
-        delay(1000);
         return;
     }
     
@@ -1394,129 +1389,139 @@ void checkUpdate() {
     Serial.print("MEGA Firmware: "); Serial.print(megaVersion); Serial.print(" -> "); Serial.println(megaUpdate); 
     if (!strncmp(espVersion, espUpdate, 4) && !strncmp(megaVersion, megaUpdate, 4)) {
         lcd.setCursor(0,1); lcd.print("System up-to-date!");
-        delay(1000);
-        return;
+        delay(1000); return;
     }
     
     // Apply ESP update?
     if (strncmp(espVersion, espUpdate, 4)) {
         // Ask user if they want to update
-        if (!askUpdate("Wifi", espVersion, espUpdate))
-            return;
-
-        // Process with update
-        Serial.println("Updating ESP...");
-        lcd.setCursor(0,1); lcd.print("Updating Wifi...");
-        writeCMD(HUB_SYS_UPDATE);
-        writeBuffer(urlEsp, strlen(urlEsp));
-
-        // Wait for ESP to Reboot   
-        timeout = millis() + 60000;     
-        while (lastEspCMD != HUB_SYS_VERSION) {
-            delay(1000);
-            writeCMD(HUB_SYS_VERSION);
-            if (Serial3.find("CMD")) 
-                processEspCMD();
-            if (millis() > timeout) {
-                Serial.println("Error: ESP not responding");      
-                return;
-            }                
+        if (askUpdate("Wifi", espVersion, espUpdate)) {
+            // Process with update
+            Serial.println("Updating ESP...");
+            lcd.setCursor(0,1); lcd.print("Updating Wifi...    ");
+            writeCMD(HUB_SYS_UPDATE);
+            writeBuffer(urlEsp, strlen(urlEsp));
+    
+            // Wait for ESP to Reboot   
+            timeout = millis() + 60000;     
+            while (lastEspCMD != HUB_SYS_VERSION) {
+                delay(1000);
+                writeCMD(HUB_SYS_VERSION);
+                if (Serial3.find("CMD")) 
+                    processEspCMD();
+                if (millis() > timeout) {
+                    lcd.setCursor(0,1); lcd.print(fail);
+                    Serial.println("Error: ESP not responding");
+                    delay(1000); return;
+                }                
+            }
+            readBuffer();
+    
+            // Check new ESP version
+            if (!strncmp(serBuffer, espUpdate, 4)) {
+                lcd.setCursor(0,1); lcd.print("Wifi updated!       ");
+                Serial.println("ESP update complete");              
+            } else {
+                lcd.setCursor(0,1); lcd.print("Error: Ver. mismatch");
+                Serial.println("ESP update failed");                      
+            }
+    
+            // Reset Wifi, and clear screen
+            setupESP();
+            while (lastEspCMD != HUB_SYS_IP)
+                if (Serial3.find("CMD")) processEspCMD(); 
+            lcd.setCursor(0,1); lcd.print(blank);               
+            lcd.setCursor(0,2); lcd.print(blank);               
+            lcd.setCursor(0,3); lcd.print(blank);               
         }
-        readBuffer();
-
-        // Check new ESP version
-        if (!strncmp(serBuffer, espUpdate, 4)) {
-            lcd.setCursor(0,1); lcd.print("Wifi updated!");
-            Serial.println("ESP update complete");              
-        } else {
-            lcd.setCursor(0,1); lcd.print("Update failed!");
-            Serial.println("ESP update failed");                      
-        }
-
-        // Reset Wifi, and clear screen
-        setupESP();
-        while (lastEspCMD != HUB_SYS_IP)
-            if (Serial3.find("CMD")) processEspCMD(); 
-        lcd.setCursor(0,1); lcd.print(blank);               
-        lcd.setCursor(0,2); lcd.print(blank);               
-        lcd.setCursor(0,3); lcd.print(blank);               
     }
     
     // Apply MEGA update?
     if (strncmp(megaVersion, megaUpdate, 4)) {
         // Ask user if they want to update
-        if (!askUpdate("Core", megaVersion, megaUpdate))
-            return;
-        
-        // Fetch update file on ESP
-        lcd.setCursor(0,1); lcd.print("Updating Core...");
-        Serial.println("Downloading update...");
-        writeCMD(HUB_URL_GET);
-        writeBuffer(urlMega, strlen(urlMega));
-
-        // Wait to receive file size
-        lastEspCMD = 0;            
-        while (lastEspCMD != HUB_URL_GET)
-            if (Serial3.find("CMD")) processEspCMD();
-
-        // Check file has size
-        if (!urlSize) {
-            lcd.setCursor(0,1); lcd.print("Update failed...");
-            Serial.println("Error: cannot download update.");
-            delay(2000);
-            return;
-        }
-
-        // Check there is enough storage for update
-        if (!InternalStorage.open(urlSize)) {
-            lcd.setCursor(0,1); lcd.print("Update failed...");
-            Serial.println("Error: not enough space to store the update.");
-            delay(2000);
-            return;
-        }
-
-        // Get update file from ESP
-        urlMode = URL_UPDATE;
-        unsigned long recvSize = 0;
-        while (1) {
-            // Request next url packet
-            writeCMD(HUB_URL_READ);
-            writeChar(160);
+        if (askUpdate("Core", megaVersion, megaUpdate)) {        
+            // Fetch update file on ESP
+            lcd.setCursor(0,1); lcd.print("Updating Core...    ");
+            Serial.println("Downloading update...");
+            writeCMD(HUB_URL_GET);
+            writeBuffer(urlMega, strlen(urlMega));
     
-            // Wait to receive packet
-            lastEspCMD = 0;
-            while (lastEspCMD != HUB_URL_READ)
+            // Wait to receive file size
+            lastEspCMD = 0;            
+            timeout = millis() + 6000;     
+            while (lastEspCMD != HUB_URL_GET) {
                 if (Serial3.find("CMD")) processEspCMD();
-
-            // Check if packet was empty
-            if (serLen)
-                recvSize += serLen;
-            else
-                break;
-        }
-        urlMode = URL_PACKET;
+                if (millis() > timeout) {
+                    lcd.setCursor(0,1); lcd.print(fail);
+                    Serial.println("Error: ESP not responding");      
+                    delay(1000); return;
+                }                
+            }
+    
+            // Check file has size
+            if (!urlSize) {
+                lcd.setCursor(0,1); lcd.print(fail);
+                Serial.println("Error: cannot download update.");
+                delay(1000); return;
+            }
+    
+            // Check there is enough storage for update
+            if (!InternalStorage.open(urlSize)) {
+                lcd.setCursor(0,1); lcd.print(fail);
+                Serial.println("Error: not enough space to store the update.");
+                delay(1000); return;
+            }
+    
+            // Get update file from ESP
+            urlMode = URL_UPDATE;
+            unsigned long recvSize = 0;
+            while (1) {
+                // Request next url packet
+                writeCMD(HUB_URL_READ);
+                writeChar(64);
         
-        // Close the internal storage
-        InternalStorage.close();
+                // Wait to receive packet
+                lastEspCMD = 0;
+                timeout = millis() + 6000;     
+                while (lastEspCMD != HUB_URL_READ) {
+                    if (Serial3.find("CMD")) processEspCMD();
+                    if (millis() > timeout) {
+                        lcd.setCursor(0,1); lcd.print(fail);
+                        Serial.println("Error: ESP not responding");      
+                        delay(1000); return;
+                    }                       
+                }
 
-        // Check size of received data
-        if (recvSize == urlSize) {
-            Serial.print("Received: ");
-            Serial.print(recvSize);
-            Serial.print("/");
-            Serial.print(urlSize);
-            Serial.println(" bytes");
-        } else {
-            lcd.setCursor(0,1); lcd.print("Update failed...");
-            Serial.println("Error: could not download entire file.");
-            delay(2000);
-            return;
+                // Check if packet was empty
+                if (serLen)
+                    recvSize += serLen;
+                else
+                    break;
+            }
+            urlMode = URL_PACKET;
+            
+            // Close the internal storage
+            InternalStorage.close();
+    
+            // Check size of received data
+            if (recvSize == urlSize) {
+                Serial.print("Received: ");
+                Serial.print(recvSize);
+                Serial.print("/");
+                Serial.print(urlSize);
+                Serial.println(" bytes");
+            } else {
+                lcd.setCursor(0,1); lcd.print(fail);
+                Serial.println("Error: could not download entire file.");
+                delay(2000);
+                return;
+            }
+    
+            lcd.setCursor(0,1); lcd.print("Rebooting Hub!      ");
+            Serial.println("Update done...");
+            Serial.flush();
+            InternalStorage.apply();
         }
-
-        lcd.setCursor(0,1); lcd.print("Rebooting...");
-        Serial.println("Applying MEGA update...");
-        Serial.flush();
-        InternalStorage.apply();
     }
 }
 
