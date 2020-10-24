@@ -98,8 +98,8 @@ const char* modeString[HUB_MODES] = {"Please setup", "Apple //", "Atari XL/XE", 
 byte hubMode = MODE_LYNX;
 
 // COMM Params
-#define FILES    16    // Number of file handles
-#define SLOTS    16    // Number of connection handles
+#define FILES    8     // Number of file handles
+#define SLOTS    8     // Number of connection handles
 #define PACKET   256   // Max. packet length (bytes)
 #define TIMEOUT  1000  // Packet timout (milliseconds)
 
@@ -581,6 +581,7 @@ void displayIP() {
 #define COM_ERR_HEADER  2 
 #define COM_ERR_TRUNCAT 3
 #define COM_ERR_CORRUPT 4
+#define COM_ERR_RESENT  5
 
 volatile unsigned char checksum;
 volatile unsigned char hubID, hubLen, *hubBuffer;
@@ -633,16 +634,15 @@ void checkPacket() {
         comCode = COM_ERR_CORRUPT;
         return;
     }
-        
+    
     // All good: process ID related stuff
     comCode = COM_ERR_OK;
     comBuffer[comLen] = 0;
-    if (comID != prevID) {
-        popPacket(comID >> 4);
-        if (comID & 0x0f == prevID & 0x0f)
-            comLen = 0;   // We already got this packet!
-        prevID = comID;
-    }
+    if (comLen && ((comID & 0x0f) == (prevID & 0x0f)))
+        comCode = COM_ERR_RESENT; // Check if we already got this packet from client?
+    if ((comID >> 4) != (prevID >> 4))
+        popPacket(comID >> 4);    // Check if last packet from hub was acknowledged
+    prevID = comID;
 }
 
 ////////////////////////////////
@@ -828,7 +828,7 @@ void oricRecvPacket() {
             return;
         }
     }
-  
+    
     // Check ID
     if (!hasID) {
       comID = data;
@@ -1056,6 +1056,10 @@ void processEspCMD() {
     case HUB_SYS_IP:
         readIP();
         displayIP();
+        break;
+
+    case HUB_SYS_SCAN:
+        readBuffer();
         break;
         
     case HUB_SYS_NOTIF:
@@ -1295,6 +1299,7 @@ unsigned char wifiScan() {
     // Scan and wait for Answer
     writeCMD(HUB_SYS_SCAN);    
     uint32_t timeout = millis()+9000;
+    lastEspCMD = 0;
     while (lastEspCMD != HUB_SYS_SCAN) {
         if (Serial3.find("CMD"))
             processEspCMD();
@@ -1302,7 +1307,8 @@ unsigned char wifiScan() {
             Serial.println("Error: ESP not responding");      
             return 0;
         }
-    }                
+    }
+    Serial.println(serBuffer);
     return 1;       
 }
 
@@ -1528,12 +1534,13 @@ void checkUpdate() {
 void setupESP() {
     // Start Mouse
     writeCMD(HUB_SYS_MOUSE);
-    writeChar(100);   // Refresh period (ms)
+    writeChar(100);  // Refresh period (ms)
   
     // Connect Wifi
     writeCMD(HUB_SYS_CONNECT);
     writeBuffer(ssid, strlen(ssid));
     writeBuffer(pswd, strlen(pswd));
+    writeChar(10);   // Packet refresh period (ms)
 }
 
 //////////////////////////
@@ -1745,7 +1752,7 @@ void runTests() {
 boolean upperCase = false;
 byte keyRow = 1, keyCol = 1;
 char inputCol, inputBuf[32]; 
-char* lower[3] = {" 1234567890-=[]\\    ", " abcdefghijklm;'  S ",  " nopqrtsuvwxyz,./ R "};
+char* lower[3] = {" 1234567890-=[]\\    ", " abcdefghijklm;'  S ",  " nopqrstuvwxyz,./ R "};
 char* upper[3] = {" !@#$%^&*()_+{}|    ",  " ABCDEFGHIJKLM:\"  S ", " NOPQRSTUVWXYZ<>? R "};
 
 void printKeyboard() {
@@ -1753,6 +1760,20 @@ void printKeyboard() {
       lcd.setCursor(0,i+1); 
       if (upperCase) lcd.print(upper[i]); 
       else           lcd.print(lower[i]); 
+    }
+}
+
+void refreshInput() {
+    unsigned char offset;
+    lcd.setCursor(inputCol, 0);
+    if (strlen(inputBuf) > (20-inputCol)) {
+        offset = strlen(inputBuf) - (20-inputCol); 
+        lcd.print(&inputBuf[offset]);
+    } else {
+        lcd.print(inputBuf);
+        offset = inputCol+strlen(inputBuf);
+        while (offset++ < 20)
+            lcd.print(" ");
     }
 }
 
@@ -1770,8 +1791,6 @@ void keyboardInput(char* param) {
     lcd.setCursor(0,0);
     lcd.print(param);
     inputCol = strlen(param);
-    lcd.setCursor(inputCol, 0);
-    lcd.print(inputBuf);
     printKeyboard();
 
     // Wait for release
@@ -1786,15 +1805,13 @@ void keyboardInput(char* param) {
         if (!(joyState[0] & joyStnd[1])) { keyRow++; if (keyRow>3)  keyRow = 1; }
         if (!(joyState[0] & joyStnd[2])) { keyCol--; if (keyCol<1)  keyCol = 18; }
         if (!(joyState[0] & joyStnd[3])) { keyCol++; if (keyCol>18) keyCol = 1; }
-        if (!(joyState[0] & joyStnd[4]) || !(joyState[0] & joyStnd[5])) {
+        if (!(joyState[0] & joyStnd[4])) {
             if (keyCol == 18) {
                 switch (keyRow) {
                 case 1:
                     if (strlen(inputBuf)) {
-                        // Delete char
-                        inputBuf[strlen(inputBuf)-1] = 0;
-                        lcd.setCursor(inputCol+strlen(inputBuf), 0);
-                        lcd.print(" ");                    
+                        inputBuf[strlen(inputBuf)-1] = 0; // Delete char
+                        refreshInput();
                     }
                     break;      
                 case 2:
@@ -1808,15 +1825,22 @@ void keyboardInput(char* param) {
                 }               
             } else { 
                 // Print character
-                if (upperCase) { 
-                    letter = upper[keyRow-1][keyCol];
-                } else {
-                    letter = lower[keyRow-1][keyCol];
+                if (strlen(inputBuf)<31) {
+                    if (upperCase) { 
+                        letter = upper[keyRow-1][keyCol];
+                    } else {
+                        letter = lower[keyRow-1][keyCol];
+                    }
+                    inputBuf[strlen(inputBuf)] = letter;
+                    inputBuf[strlen(inputBuf)+1] = 0;
+                    refreshInput();
                 }
-                inputBuf[strlen(inputBuf)] = letter;
-                inputBuf[strlen(inputBuf)+1] = 0;
-                lcd.setCursor(inputCol, 0);
-                lcd.print(inputBuf);
+            }
+        }
+        if (!(joyState[0] & joyStnd[5])) {
+            if (strlen(inputBuf)) {
+                inputBuf[strlen(inputBuf)-1] = 0; // Delete char
+                refreshInput();
             }
         }
         
@@ -1833,6 +1857,7 @@ byte listPage = 0;
 signed char listRow = 0;
 
 unsigned char listSelection() {
+    unsigned char s;
     while(true) {
         // Reset screen
         lcd.clear();
@@ -1849,7 +1874,9 @@ unsigned char listSelection() {
         for (i=0; i<4; i++) {
             if (elt) {
                 lcd.setCursor(1,i);
-                lcd.print(elt->data);        
+                s = 0;
+                while (s<strlen(elt->data) && s<19)
+                    lcd.print(elt->data[s++]);
                 elt = elt->next;
             }
         }
@@ -1968,10 +1995,14 @@ void configMenu() {
                     lcd.print("Scan now");
                     break;
                 case 2:
-                    lcd.print(ssid);
+                    s = 0;
+                    while (s<strlen(ssid) && s<15)
+                        lcd.print(ssid[s++]);
                     break;    
                 case 3:
-                    lcd.print(pswd);
+                    s = 0;
+                    while (s<strlen(pswd) && s<15)
+                        lcd.print(pswd[s++]);
                     break;    
                 } break;            
             case 3:
@@ -2023,25 +2054,35 @@ void configMenu() {
                     displayHeader();
                     return;
                 } break;
-            case 2:         
+            case 2:     
                 switch(row) {
                 case 1:
                     // Scan Networks
-                    wifiScan(); s=0;
-                    while (serBuffer[s] != 0) {
-                        while (serBuffer[s] != '\n' && serBuffer[s] != 0) s++;
-                        serBuffer[s++] = 0;
-                        if (serBuffer[s]) { 
-                            pushList(&serBuffer[s]);
+                    if (wifiScan()) {
+                        // Create SSID list
+                        s=0; while (serBuffer[s] != 0) {
+                            while (serBuffer[s] != '\n' && serBuffer[s] != '\r' && serBuffer[s] != 0) s++;
+                            serBuffer[s++] = 0;
+                            if (serBuffer[s]) {
+                                pushList(&serBuffer[s]);
+                            }
                         }
+
+                        // Select SSID
+                        s = listSelection();
+                        strcpy(ssid, getList(s));
+                        clearList();
+                        
+                        // Set PSWD
+                        keyboardInput(menuParam[menu-1][2]);
+                        strcpy(pswd, inputBuf);                    
+                        changes = true;
+                    } else {
+                        // Cannot fetch...
+                        lcd.setCursor(5,1); 
+                        lcd.print("No SSID found");
+                        delay(1000);
                     }
-                    s = listSelection();
-                    strcpy(ssid, getList(s));
-                    clearList();
-                    // Set PSWD
-                    keyboardInput(menuParam[menu-1][2]);
-                    strcpy(pswd, inputBuf);                    
-                    changes = true;
                     break;
                 case 2:
                     // Set SSID
@@ -2114,7 +2155,7 @@ void setup() {
 }
 
 #ifdef __DEBUG_COM__
-  int comCnt, comErr[5];
+  int comCnt, comErr[6];
 #endif
 long comTime1, comTime2;
 
@@ -2148,9 +2189,10 @@ void loop() {
         comErr[comCode] += 1;
         //Serial.print(comCnt++);
         //Serial.print(" Tim="); Serial.print(comTime2-comTime1);
-        Serial.print(" Hea="); Serial.print(comErr[COM_ERR_HEADER]);
-        Serial.print(" Tru="); Serial.print(comErr[COM_ERR_TRUNCAT]);
-        Serial.print(" Cor="); Serial.print(comErr[COM_ERR_CORRUPT]);
+        Serial.print(" Head="); Serial.print(comErr[COM_ERR_HEADER]);
+        Serial.print(" Trnc="); Serial.print(comErr[COM_ERR_TRUNCAT]);
+        Serial.print(" Crpt="); Serial.print(comErr[COM_ERR_CORRUPT]);
+        Serial.print(" Rsnt="); Serial.print(comErr[COM_ERR_RESENT]);
         Serial.print(" (Rx)");
         Serial.print(" ID=C");  Serial.print(comID & 0x0f);
         Serial.print(",H"); Serial.print(comID >> 4);
