@@ -50,8 +50,8 @@ char espVersion[] = "v0.1";
 #define HUB_URL_READ     61
 
 // ESP Params
-#define SLOTS    16     // Number of tcp/udp handles
-#define PACKET   256    // Max. packet length (bytes)
+#define SLOTS    8     // Number of tcp/udp handles
+#define PACKET   256   // Max. packet length (bytes)
 
 // Wifi connection params
 char ssid[32], pswd[64];
@@ -73,10 +73,12 @@ HTTPClient urlClient;
 char udpSlot=0, tcpSlot=0;
 uint32_t webTimer, webTimeout;
 boolean webBusy = false;
+unsigned char packetPeriod = 0;
+long packetTimer = 0;
 
 // Mouse Setting
 PS2Mouse mouse;
-char mousePeriod = 0;
+unsigned char mousePeriod = 0;
 long mouseTimer = 0;
 
 ////////////////////////////
@@ -464,6 +466,7 @@ void processCMD() {
       case HUB_SYS_CONNECT:
         readBuffer(ssid);
         readBuffer(pswd);
+        packetPeriod = readChar();
         wifiConnect(ssid, pswd);
         break;
 
@@ -574,9 +577,12 @@ void loop(void) {
         processCMD();
         
     // Check UDP/TCP slots and Server
-    for (byte slot=0; slot<SLOTS; slot++) udpReceive(slot);
-    for (byte slot=0; slot<SLOTS; slot++) tcpReceive(slot);
-    webReceive();
+    if (packetPeriod && (millis()-packetTimer > packetPeriod)) {
+        packetTimer = millis();
+        for (byte slot=0; slot<SLOTS; slot++) udpReceive(slot);
+        for (byte slot=0; slot<SLOTS; slot++) tcpReceive(slot);
+        webReceive();
+    }
     
     // Read Mouse State
     if (mousePeriod && (millis()-mouseTimer > mousePeriod) && mouse.update()) {
