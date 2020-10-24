@@ -271,7 +271,7 @@ unsigned char joyStnd[6] = {   1,  2,  4,  8, 16, 32 };
 unsigned char joyPase[6] = {  16,  8,  1,  2,  4,  0 };
 
 // Mouse params
-unsigned char mouseState[2] = { 80, 100 };
+unsigned char mouseState[2] = { 255, 255 };
 
 void setupJOY() {
     // Set I/O pins
@@ -341,7 +341,7 @@ void readMouse() {
     Serial.print(","); Serial.print((info&4)>0);       // R but
     Serial.print(","); Serial.print(mouseState[0]);
     Serial.print(","); Serial.println(mouseState[1]);
-#endif        
+#endif    
 }
 
 ////////////////////////////////
@@ -2175,7 +2175,7 @@ void loop() {
         // Process Lynx Communication
         comTime1 = micros();
         lynxRecvPacket();
-        if (comCode == COM_ERR_OK) {
+        if (comCode == COM_ERR_OK || comCode == COM_ERR_RESENT) {
             // Send reply immediately (almost)
             delayMicroseconds(6*lynxBitPeriod);   // Bauds: 62500=6* / 41666=8* / 9600=2*
             preparePacket();
