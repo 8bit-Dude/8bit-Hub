@@ -22,7 +22,7 @@
 // Firmware Version
 char espVersion[5] = "?";
 char espUpdate[5] = "?";
-char megaVersion[5] = "v0.1";
+char megaVersion[5] = "v0.3";
 char megaUpdate[5] = "?";
 char urlEsp[]  = "http://8bit-unity.com/Hub-ESP8266.bin";
 char urlMega[] = "http://8bit-unity.com/Hub-Mega2560.bin";
@@ -38,6 +38,7 @@ char urlVer[]  = "http://8bit-unity.com/Hub-Version.txt";
 #define HUB_SYS_MOUSE     6
 #define HUB_SYS_VERSION   7
 #define HUB_SYS_UPDATE    8
+#define HUB_SYS_RESEND    9
 #define HUB_DIR_LS       10  // Todo: Implement for root directory /microSD
 #define HUB_DIR_MK       11
 #define HUB_DIR_RM       12
@@ -112,6 +113,44 @@ File hubFile[FILES];
 // Buffers for data exchange with ESP8266
 char serBuffer[PACKET];
 unsigned char serLen;
+
+////////////////////////////////
+//     DEBUGGING functions    //
+////////////////////////////////
+
+/*void udpDebug() {
+    // Setup request    
+    unsigned char cmd[] = {1};
+
+    while (true) {
+        writeCMD(HUB_UDP_SLOT);
+        writeChar(0);
+        writeCMD(HUB_UDP_OPEN);
+        writeChar(199); writeChar(47);
+        writeChar(196); writeChar(106);
+        writeInt(5000); writeInt(5000);
+        writeCMD(HUB_UDP_SEND);
+        writeBuffer(cmd, 1);
+        
+        // Wait for answer
+        uint32_t timeout = millis()+3000;
+        while (millis() < timeout) {
+            if (Serial3.find("CMD") && readChar() == HUB_UDP_RECV) {
+                readChar();
+                if (readBuffer())
+                    Serial.print("Received: ");
+                    Serial.println(serLen);
+                break;
+            }
+        }
+        if (millis() >= timeout) {
+              Serial.println("Timeout");
+              lcd.print("Timeout");
+        }
+        writeCMD(HUB_UDP_CLOSE);
+        delay(500);
+    }
+}*/
 
 ////////////////////////////////
 //      PACKET functions      //
@@ -787,7 +826,7 @@ void oricWrite(byte value) {
     PORTE |= _BV(PE4);
     delayMicroseconds(10);
     PORTE &= ~_BV(PE4);
-    delayMicroseconds(250);
+    delayMicroseconds(200);
 }
 
 void oricSendPacket() {
@@ -818,6 +857,7 @@ void oricRecvPacket() {
     if (!hasHeader) {
         switch (data) {
         case 85:
+            checkPacket();
             preparePacket();
             oricSendPacket(); 
             return;
@@ -851,7 +891,6 @@ void oricRecvPacket() {
     if (rcvLen < comLen+1) { return; }
   
     // Check packet and reset state (it will be processed in main loop)
-    checkPacket();
     hasHeader = 0;
     hasID = 0;
     hasLen = 0;
@@ -898,7 +937,7 @@ void writeBuffer(char* buffer, unsigned char len) {
 
 unsigned char readChar() {
     // Get char from serial  
-    uint32_t timeout = millis()+20;    
+    uint32_t timeout = millis()+10;    
     while (!Serial3.available()) {
         if (millis() > timeout)
           return 0;
@@ -920,6 +959,14 @@ unsigned char readBuffer() {
         timeout = millis()+10;    
         while (!Serial3.available()) {
             if (millis() > timeout) {
+            #if defined(__DEBUG_CMD__)
+                Serial.print("ESP: Timeout (");
+                Serial.print(i);
+                Serial.print("/");
+                Serial.print(len);
+                Serial.println(")");
+            #endif             
+                writeCMD(HUB_SYS_RESEND);
                 serLen = 0;
                 return 0;
             }
@@ -1523,7 +1570,7 @@ void checkUpdate() {
                 return;
             }
     
-            lcd.setCursor(0,1); lcd.print("Rebooting Hub!      ");
+            lcd.setCursor(0,1); lcd.print("Please reboot Hub!  ");
             Serial.println("Update done...");
             Serial.flush();
             InternalStorage.apply();
@@ -2147,7 +2194,7 @@ void setup() {
 
     // Check for Updates
     checkUpdate();
-
+    
     // Display status info on LCD
     displayMode();
     displaySD();

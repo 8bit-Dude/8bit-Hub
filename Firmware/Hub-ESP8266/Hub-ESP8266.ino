@@ -9,7 +9,7 @@
 #include <WiFiUdp.h>
 
 // Firmware Version
-char espVersion[] = "v0.1";
+char espVersion[] = "v0.3";
 
 // HUB Commands
 #define HUB_SYS_ERROR     0
@@ -21,6 +21,7 @@ char espVersion[] = "v0.1";
 #define HUB_SYS_MOUSE     6
 #define HUB_SYS_VERSION   7
 #define HUB_SYS_UPDATE    8
+#define HUB_SYS_RESEND    9
 #define HUB_DIR_LS       10
 #define HUB_DIR_MK       11
 #define HUB_DIR_RM       12
@@ -73,13 +74,30 @@ HTTPClient urlClient;
 char udpSlot=0, tcpSlot=0;
 uint32_t webTimer, webTimeout;
 boolean webBusy = false;
-unsigned char packetPeriod = 0;
-long packetTimer = 0;
+
+// UDP/TCP socket management
+uint32_t socketTimer = 0;
+unsigned char socketPeriod = 10;
+unsigned char socketTimeout = 10;
 
 // Mouse Setting
 PS2Mouse mouse;
 unsigned char mousePeriod = 0;
 long mouseTimer = 0;
+
+////////////////////////////////
+//      PACKET functions      //
+////////////////////////////////
+
+// Define packet structure
+typedef struct packet {
+    unsigned char cmd;
+    signed char slot;
+    unsigned char len;
+    char buffer[PACKET];
+} packet_t;
+
+packet_t lastPacket;
 
 ////////////////////////////
 //      UDP functions     //
@@ -101,15 +119,23 @@ void udpOpen(unsigned char slot) {
 }
 
 void udpReceive(unsigned char slot) {
-    if (udp[slot].parsePacket()) {
-        // Read data from UDP
-        serLen = udp[slot].read(serBuffer, PACKET-1);
-        serBuffer[serLen] = 0;
-        
-        // Send it to mega        
-        writeCMD(HUB_UDP_RECV);    
-        Serial.write(slot); 
-        writeBuffer(serBuffer, serLen);         
+    // Check for incoming packet
+    int len = udp[slot].parsePacket();
+    if (len) {
+        // Wait for all data to arrive (within timeout period)
+        uint32_t timeOut = millis()+socketTimeout;
+        while (true) {
+            if (udp[slot].available() == len) break;
+            if (millis() > timeOut) return;
+        }
+
+        // Read UDP packet
+        len = udp[slot].read(serBuffer, PACKET-1);
+        if (len) {
+            // Send to mega        
+            serLen = len; serBuffer[serLen] = 0;
+            writePacket(HUB_UDP_RECV, slot, serBuffer, serLen);
+        }
     }
 }
 
@@ -157,9 +183,7 @@ void tcpReceive(unsigned char slot) {
         serBuffer[serLen] = 0;
         
         // Send it to mega        
-        writeCMD(HUB_TCP_RECV);    
-        Serial.write(slot); 
-        writeBuffer(serBuffer, serLen);                 
+        writePacket(HUB_TCP_RECV, slot, serBuffer, serLen);                
     }
 }
 
@@ -216,8 +240,7 @@ void webReceive() {
             if (c == '\n') {            // check if it is a newline character...
                 // Did we find the GET ... line?
                 if (!strncmp(webBuffer, "GET", 3)) {
-                    writeCMD(HUB_WEB_RECV);
-                    writeBuffer(webBuffer, webLen);
+                    writePacket(HUB_WEB_RECV, -1, webBuffer, webLen);                
                     webBusy = true;
                     return;                   
                 }
@@ -313,8 +336,7 @@ void urlRead() {
     }
     
     // Send it to mega        
-    writeCMD(HUB_URL_READ);    
-    writeBuffer(serBuffer, serLen);   
+    writePacket(HUB_URL_READ, -1, serBuffer, serLen);
 }
 
 ////////////////////////////////
@@ -350,6 +372,28 @@ void writeLong(unsigned long input) {
 void writeBuffer(char* buffer, unsigned char len) {
     Serial.write(len);
     Serial.write(buffer, len);
+}
+
+void writePacket(unsigned char cmd, signed char slot, char* buffer, unsigned char len) {
+    // Make a copy (in case resend is requested)
+    lastPacket.cmd = cmd;
+    lastPacket.slot = slot;
+    lastPacket.len = len;
+    memcpy(lastPacket.buffer, buffer, len);
+
+    // Write to Serial
+    writeCMD(cmd);    
+    if (slot >= 0)
+        Serial.write(slot); 
+    writeBuffer(buffer, len);
+}
+
+void resendPacket() {
+    // Write to Serial
+    writeCMD(lastPacket.cmd);    
+    if (lastPacket.slot >= 0)
+        Serial.write(lastPacket.slot); 
+    writeBuffer(lastPacket.buffer, lastPacket.len);
 }
 
 unsigned char readChar() {
@@ -466,7 +510,7 @@ void processCMD() {
       case HUB_SYS_CONNECT:
         readBuffer(ssid);
         readBuffer(pswd);
-        packetPeriod = readChar();
+        socketPeriod = readChar();
         wifiConnect(ssid, pswd);
         break;
 
@@ -491,6 +535,10 @@ void processCMD() {
 
       case HUB_SYS_UPDATE:
         updateESP();          
+        break;
+
+      case HUB_SYS_RESEND:
+        resendPacket();
         break;
 
       case HUB_UDP_SLOT:
@@ -577,8 +625,8 @@ void loop(void) {
         processCMD();
         
     // Check UDP/TCP slots and Server
-    if (packetPeriod && (millis()-packetTimer > packetPeriod)) {
-        packetTimer = millis();
+    if (millis() >= socketTimer) {
+        socketTimer = millis() + socketPeriod;
         for (byte slot=0; slot<SLOTS; slot++) udpReceive(slot);
         for (byte slot=0; slot<SLOTS; slot++) tcpReceive(slot);
         webReceive();
