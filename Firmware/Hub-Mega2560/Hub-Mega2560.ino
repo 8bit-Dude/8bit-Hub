@@ -1472,6 +1472,7 @@ void checkUpdate() {
     
             // Check new ESP version
             if (!strncmp(serBuffer, espUpdate, 4)) {
+                memcpy(espVersion, serBuffer, 4);
                 lcd.setCursor(0,1); lcd.print("Wifi updated!       ");
                 Serial.println("ESP update complete");              
             } else {
