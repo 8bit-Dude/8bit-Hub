@@ -36,7 +36,7 @@ private:
 
     char waitForClockState(int expectedState);
 
-    void requestData();
+    char requestData();
 
     char readByte();
 

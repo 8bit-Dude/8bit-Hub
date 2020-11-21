@@ -2,7 +2,7 @@
 #include "ps2mouse.h"
 #include "Arduino.h"
 
-#define TIMEOUT 999
+#define TIMEOUT 2000 	// MICROSECONDS
 
 #define INTELLI_MOUSE 3
 #define SCALING_1_TO_1 0xE6
@@ -191,11 +191,10 @@ char PS2Mouse::waitForClockState(int expectedState) {
 }
 
 char PS2Mouse::update() {
-    requestData();
-    state.info = readByte();
-	if (!state.info)
+    if (!requestData())
 		return 0;
 	
+    state.info = readByte();
     state.x = readByte();
     state.y = readByte();
 
@@ -206,6 +205,7 @@ char PS2Mouse::update() {
     return 1;
 };
 
-void PS2Mouse::requestData() {
-    writeAndReadAck(REQUEST_DATA);
+char PS2Mouse::requestData() {
+    if (!writeAndReadAck(REQUEST_DATA))
+		return 0;
 }
