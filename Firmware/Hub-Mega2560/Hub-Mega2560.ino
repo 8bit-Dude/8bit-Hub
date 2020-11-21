@@ -22,7 +22,7 @@
 // Firmware Version
 char espVersion[5] = "?";
 char espUpdate[5] = "?";
-char megaVersion[5] = "v0.3";
+char megaVersion[5] = "v0.4";
 char megaUpdate[5] = "?";
 char urlEsp[]  = "http://8bit-unity.com/Hub-ESP8266.bin";
 char urlMega[] = "http://8bit-unity.com/Hub-Mega2560.bin";
@@ -311,6 +311,8 @@ unsigned char joyPase[6] = {  16,  8,  1,  2,  4,  0 };
 
 // Mouse params
 unsigned char mouseState[2] = { 255, 255 };
+unsigned char mouseSpeed = 1;
+unsigned char mouseFPS = 1;
 
 void setupJOY() {
     // Set I/O pins
@@ -360,26 +362,43 @@ void readJOY() {
 #define MIN(a,b) (a>b?b:a)
 
 void readMouse() {
-    unsigned char info = readChar();
-    signed int x = readChar();
-    signed int y = readChar();
-    joyState[0] |= 192; joyState[1] |= 192;
-    if (info&2) { joyState[0] &= ~64;  }  // L Button
-    if (info&4) { joyState[0] &= ~128; }  // R Button
-    if (info&8) { joyState[1] &= ~64;  }  // M Button
-    if (info&32) { x = -(255-x); }
-    if (info&64) { y = -(255-y); }
-    x /= 4; y /= -3;
-    if (x < 0) { mouseState[0] -= MIN(mouseState[0], -x); }
+    unsigned char s = readChar();
+    signed char x = readChar();
+    signed char y = readChar();
+    signed char w = readChar();
+
+    // Adjust inputs
+    switch (mouseSpeed) {
+    case 0:
+        x /= 6; y /= -4;
+        break;
+    case 1:
+        x /= 4; y /= -3;
+        break;
+    default:
+        x /= 2; y /= -2;
+      break;        
+    }
+    if (w == -128) w = 0;
+
+    // Register inputs
+    joyState[0] |= 192; joyState[1] |= 192; joyState[2] |= 192;
+    if (s&1) { joyState[0] &= ~64;  }  // L Button
+    if (s&2) { joyState[0] &= ~128; }  // R Button
+    if (s&4) { joyState[1] &= ~64;  }  // M Button
+    if (w<0) { joyState[2] &= ~64;  }  // W Up
+    if (w>0) { joyState[2] &= ~128; }  // W Down
+    if (x < 0) { mouseState[0] -= MIN(mouseState[0], -x);    }
     if (x > 0) { mouseState[0] += MIN(159-mouseState[0], x); }
-    if (y < 0) { mouseState[1] -= MIN(mouseState[1], -y); }
+    if (y < 0) { mouseState[1] -= MIN(mouseState[1], -y);    }
     if (y > 0) { mouseState[1] += MIN(199-mouseState[1], y); }
 #ifdef __DEBUG_MOUSE__   
-    Serial.print("Mouse: "); Serial.print((info&2)>0); // L but
-    Serial.print(","); Serial.print((info&8)>0);       // M but
-    Serial.print(","); Serial.print((info&4)>0);       // R but
-    Serial.print(","); Serial.print(mouseState[0]);
-    Serial.print(","); Serial.println(mouseState[1]);
+    Serial.print("M:"); Serial.print((s&1)>0); // L but
+    Serial.print(",");  Serial.print((s&4)>2); // M but
+    Serial.print(",");  Serial.print((s&2)>1); // R but
+    Serial.print(",");  Serial.print(mouseState[0]);
+    Serial.print(",");  Serial.print(mouseState[1]);
+    Serial.print(",");  Serial.println(w);
 #endif    
 }
 
@@ -1579,16 +1598,12 @@ void checkUpdate() {
     }
 }
 
-void setupESP() {
-    // Start Mouse
-    writeCMD(HUB_SYS_MOUSE);
-    writeChar(100);  // Refresh period (ms)
-  
+void setupESP() {  
     // Connect Wifi
     writeCMD(HUB_SYS_CONNECT);
     writeBuffer(ssid, strlen(ssid));
     writeBuffer(pswd, strlen(pswd));
-    writeChar(10);   // Packet refresh period (ms)
+    writeChar(10);   // Packet refresh period (ms)  
 }
 
 //////////////////////////
@@ -1612,7 +1627,7 @@ void wifiTest() {
 
 void urlTest() {
     unsigned char url[] = "http://8bit-unity.com/test.txt";
-    lcd.setCursor(0,1); 
+    lcd.setCursor(0,3); 
     lcd.print("URL:");    
     Serial.print("URL: ");
 
@@ -1752,16 +1767,29 @@ void runTests() {
     wifiTest();
     tcpTest();
     udpTest();
-    lcd.setCursor(0,3);
-    lcd.print("Network Done");
-    delay(3000);
+    urlTest();
+    delay(2000);
+
+    // Start Mouse (specify refresh period in ms)
+    writeCMD(HUB_SYS_MOUSE);
+    switch (mouseFPS) {
+    case 1:
+      writeChar(200);  // (5 FPS)  
+      break; 
+    case 2:
+      writeChar(100);  // (10 FPS)   
+      break;
+    default:
+      writeChar(50);   // (20 FPS)   
+      break;
+    }
     
     // Run Joy Test
     lcd.clear();
     lcd.setCursor(0, 0); lcd.print("Joy1: , , , , ,");
     lcd.setCursor(0, 1); lcd.print("Joy2: , , , , ,");
     lcd.setCursor(0, 2); lcd.print("Joy3: , , , , ,");
-    lcd.setCursor(0, 3); lcd.print("Mous:   ,   , , ,");
+    lcd.setCursor(0, 3); lcd.print("Mous:   ,   , , , ,");
     uint32_t timeout = millis()+30000;
     while (millis()<timeout) {
         // Check Joysticks
@@ -1778,16 +1806,15 @@ void runTests() {
             char cmd = readChar();        
             if (cmd == HUB_SYS_MOUSE) {
                 readMouse();
-                lcd.setCursor(5,3);
-                lcd.print(mouseState[0]);
-                lcd.setCursor(9,3);
-                lcd.print(mouseState[1]);
-                lcd.setCursor(13,3);
-                if (!(joyState[0] & 64))  lcd.print("L");
-                lcd.setCursor(15,3);
-                if (!(joyState[1] & 64))  lcd.print("M");
-                lcd.setCursor(17,3);
-                if (!(joyState[0] & 128)) lcd.print("R");
+                lcd.setCursor(5,3);  lcd.print("   ");
+                lcd.setCursor(5,3);  lcd.print(mouseState[0]);
+                lcd.setCursor(9,3);  lcd.print("   ");
+                lcd.setCursor(9,3);  lcd.print(mouseState[1]);
+                lcd.setCursor(13,3); if (!(joyState[0] & 64))  lcd.print("L");
+                lcd.setCursor(15,3); if (!(joyState[1] & 64))  lcd.print("M");
+                lcd.setCursor(17,3); if (!(joyState[0] & 128)) lcd.print("R");
+                lcd.setCursor(19,3); if (!(joyState[2] & 64))  lcd.print("U");
+                lcd.setCursor(19,3); if (!(joyState[2] & 128)) lcd.print("D");
             }
         }
     }
@@ -1981,7 +2008,9 @@ unsigned char listSelection() {
 void readConfig() {
     // Read config from eeprom
     byte i;
-    hubMode = 255-EEPROM.read(0); if (hubMode>=HUB_MODES) hubMode = 0;
+    hubMode    = 255-EEPROM.read(0); if (hubMode>=HUB_MODES) hubMode = 0;
+    mouseSpeed = EEPROM.read(1); if (mouseSpeed>=3) mouseSpeed = 1;
+    mouseFPS   = EEPROM.read(2); if (mouseFPS>=3) mouseFPS = 1;
     for (i=0; i<32; i++) ssid[i] = 255-EEPROM.read(32+i);
     for (i=0; i<64; i++) pswd[i] = 255-EEPROM.read(64+i);
 
@@ -1996,14 +2025,18 @@ void writeConfig() {
     // Read config from eeprom
     byte i;
     EEPROM.write(0, 255-hubMode);
+    EEPROM.write(1, mouseSpeed);
+    EEPROM.write(2, mouseFPS);
     for (i=0; i<32; i++) EEPROM.write(32+i, 255-ssid[i]);
     for (i=0; i<64; i++) EEPROM.write(64+i, 255-pswd[i]);
 }
 
 byte menu = 1, row = 1;
 boolean changes = false;  // Let's be kind on eeprom...
-const char* menuHeader[3] = {"   < Hub Config >   ", "  < Wifi Config >   ", "    < Firmware >    "};
-const char* menuParam[3][3] = {{"Mode:", "Test:", "Exit:"}, {"Ntwk:", "SSID:", "Pass:"}, {"Wifi:", "Core:", "Updt:"}};
+const char* menuHeader[4] = {"   < Hub Config >   ", "  < Wifi Config >   ", "  < Mouse Config >  ", "    < Firmware >    "};
+const char* menuParam[4][3] = { {"Mode:", "Test:", "Exit:"}, {"Ntwk:", "SSID:", "Pass:"}, {"Spd.:", "Rfr.:", ""}, {"Wifi:", "Core:", "Updt:"} };
+const char *labelSpeed[3] = {"Slow", "Med.", "Fast"};
+const char *labelFPS[3] = {"5 FPS", "10 FPS", "20 FPS"};
 
 void configMenu() {
     char s=0;
@@ -2056,6 +2089,17 @@ void configMenu() {
             case 3:
                 switch(param) {
                 case 1:
+                    lcd.print(labelSpeed[mouseSpeed]);
+                    break;
+                case 2:
+                    lcd.print(labelFPS[mouseFPS]);
+                    break;    
+                case 3:
+                    break;    
+                } break;                 
+            case 4:
+                switch(param) {
+                case 1:
                     lcd.print(espVersion);
                     break;
                 case 2:
@@ -2077,8 +2121,8 @@ void configMenu() {
         // Check Input
         if (!(joyState[0] & joyStnd[0])) { row--; if (row<1) row = 3; }
         if (!(joyState[0] & joyStnd[1])) { row++; if (row>3) row = 1; }
-        if (!(joyState[0] & joyStnd[2])) { menu--; if (menu<1)  menu = 3; }
-        if (!(joyState[0] & joyStnd[3])) { menu++; if (menu>3)  menu = 1; }
+        if (!(joyState[0] & joyStnd[2])) { menu--; if (menu<1)  menu = 4; }
+        if (!(joyState[0] & joyStnd[3])) { menu++; if (menu>4)  menu = 1; }
         if (!(joyState[0] & joyStnd[4]) || !(joyState[0] & joyStnd[5])) {   
             switch (menu) {
             case 1:
@@ -2145,7 +2189,28 @@ void configMenu() {
                     changes = true;
                     break;    
                 } break;            
-            case 3:         
+            case 3:
+                switch(row) {
+                case 1:
+                    // Change Mouse Speed
+                    delay(200);
+                    for (byte i=0; i<3; i++)
+                        pushList(labelSpeed[i]);
+                    mouseSpeed = listSelection();
+                    clearList();
+                    changes = true;
+                    break;    
+                case 2:
+                    // Change Mouse Refresh
+                    delay(200);
+                    for (byte i=0; i<3; i++)
+                        pushList(labelFPS[i]);
+                    mouseFPS = listSelection();
+                    clearList();
+                    changes = true;
+                    break;       
+                } break;
+            case 4:         
                 switch(row) {
                 case 3:
                     // Try to Update
@@ -2185,7 +2250,7 @@ void setup() {
             configMenu();
         }
     }
-        
+
     // Setup peripherals
     lcd.setCursor(0,1);
     lcd.print("Booting...          ");
@@ -2195,6 +2260,10 @@ void setup() {
 
     // Check for Updates
     checkUpdate();
+
+    // Start Mouse
+    writeCMD(HUB_SYS_MOUSE);
+    writeChar(100);  // Refresh period (ms)      
     
     // Display status info on LCD
     displayMode();
