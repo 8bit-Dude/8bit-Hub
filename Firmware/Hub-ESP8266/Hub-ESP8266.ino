@@ -9,7 +9,7 @@
 #include <WiFiUdp.h>
 
 // Firmware Version
-char espVersion[] = "v0.3";
+char espVersion[] = "v0.4";
 
 // HUB Commands
 #define HUB_SYS_ERROR     0
@@ -81,7 +81,7 @@ unsigned char socketPeriod = 10;
 unsigned char socketTimeout = 10;
 
 // Mouse Setting
-PS2Mouse mouse;
+PS2Mouse mouse(0, 2);
 unsigned char mousePeriod = 0;
 long mouseTimer = 0;
 
@@ -519,7 +519,7 @@ void processCMD() {
         break;
         
       case HUB_SYS_MOUSE:
-        if (!mouse.init()) {
+        if (!mouse.initialize()) {
             reply(HUB_SYS_NOTIF, "Mouse not connected");
             mousePeriod = 0;
             readChar();
@@ -634,10 +634,11 @@ void loop(void) {
     
     // Read Mouse State
     if (mousePeriod && (millis()-mouseTimer > mousePeriod) && mouse.update()) {
-        mouseTimer = millis();
         writeCMD(HUB_SYS_MOUSE);
-        Serial.write(mouse.status);
-        Serial.write(mouse.x);
-        Serial.write(mouse.y);
+        Serial.write(mouse.state.info);
+        Serial.write(mouse.state.x);
+        Serial.write(mouse.state.y);
+        Serial.write(mouse.state.wheel);
+        mouseTimer = millis();
     }
 }

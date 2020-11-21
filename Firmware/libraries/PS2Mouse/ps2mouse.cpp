@@ -1,188 +1,211 @@
-/*
- * ps2.cpp - an interface library for ps2 devices.  Common devices are
- * mice, keyboard, barcode scanners etc.  See the examples for mouse and
- * keyboard interfacing.
- * limitations:
- *      we do not handle parity errors.
- *      The timing constants are hard coded from the spec. Data rate is
- *         not impressive.
- *      probably lots of room for optimization.
- */
 
 #include "ps2mouse.h"
+#include "Arduino.h"
 
-//#define readclck (PINK & _BV(PK6))
-#define readclck (digitalRead(0))
-//#define readdata (PINK & _BV(PK7))
-#define readdata (digitalRead(2))
+#define TIMEOUT 999
 
-#define timeout ((micros()-timer) > 9999)
+#define INTELLI_MOUSE 3
+#define SCALING_1_TO_1 0xE6
+#define RESOLUTION_8_COUNTS_PER_MM 3
 
 unsigned long timer;
 
-// Faster switching
-void gohiclck()
-{
-	//DDRK &= ~_BV(PK6);
-    //PORTK |= _BV(PK6); 
-	pinMode(0, INPUT);
-	digitalWrite(0, HIGH);	
-}
-void goloclck()
-{
-	//DDRK |= _BV(PK6);
-	//PORTK &= ~_BV(PK6);
-	pinMode(0, OUTPUT);
-	digitalWrite(0, LOW);	
-}
-void gohidata()
-{
-	//DDRK &= ~_BV(PK7);
-    //PORTK |= _BV(PK7);
-	pinMode(2, INPUT);
-	digitalWrite(2, HIGH);	
-}
-void golodata()
-{
-	//DDRK |= _BV(PK7);
-	//PORTK &= ~_BV(PK7);
-	pinMode(2, OUTPUT);
-	digitalWrite(2, LOW);	
+enum Commands {
+    SET_RESOLUTION = 0xE8,
+    REQUEST_DATA = 0xEB,
+    SET_REMOTE_MODE = 0xF0,
+    GET_DEVICE_ID = 0xF2,
+    SET_SAMPLE_RATE = 0xF3,
+    RESET = 0xFF,
+};
+
+PS2Mouse::PS2Mouse(int clockPin, int dataPin) {
+    _clockPin = clockPin;
+    _dataPin = dataPin;
+    _supportsIntelliMouseExtensions = false;
 }
 
-/*
- * the clock and data pins can be wired directly to the clk and data pins
- * of the PS2 connector.  No external parts are needed.
- */
-PS2Mouse::PS2Mouse()
-{
-	gohiclck();
-	gohidata();
+void PS2Mouse::high(int pin) {
+    pinMode(pin, INPUT);
+    digitalWrite(pin, HIGH);
 }
 
-/* write a byte to the PS2 device */
-char PS2Mouse::write(unsigned char data)
-{
-	unsigned char i, parity = 1;
-	
-	gohidata();
-	gohiclck();
-	delayMicroseconds(10);	
-	goloclck();
-	delayMicroseconds(10);
-	golodata();
-	delayMicroseconds(10);
-	gohiclck();  // start bit
-	
-	// wait for device to take control of clock
-	delayMicroseconds(10);
-	while (readclck) { if (timeout) { return 0; } }
-
-	// clear to send data
-	for (i=0; i < 8; i++) 	{
-		if (data & 0x01) {
-			gohidata();
-		} else {
-			golodata();
-		}
-		// wait for clock
-		while (!readclck) { if (timeout) { return 0; } }
-		while (readclck)  { if (timeout) { return 0; } }
-		parity = parity ^ (data & 0x01);
-		data = data >> 1;
-	}
-	// parity bit
-	if (parity)	{
-		gohidata();
-	} else {
-		golodata();
-	}
-	// clock cycle - like ack.
-	while (!readclck) { if (timeout) { return 0; } }
-	while (readclck)  { if (timeout) { return 0; } }
-	// stop bit
-	gohidata();
-	delayMicroseconds(10);
-	while (readclck) { if (timeout) { return 0; } }
-	// mode switch
-	while (!readclck || !readdata) { if (timeout) { return 0; } }
-	// hold up incoming data
-	goloclck();
-	return 1;
+void PS2Mouse::low(int pin) {
+    pinMode(pin, OUTPUT);
+    digitalWrite(pin, LOW);
 }
 
-
-/*
- * read a byte of data from the ps2 device.  Ignores parity.
- */
-char PS2Mouse::read(void)
-{
-	unsigned char data = 0x00;
-	unsigned char i;
-	unsigned char bit = 0x01;
-
-	// start clock
-	gohiclck();
-	gohidata();
-	delayMicroseconds(10);
-	while (readclck)  { if (timeout) { return 0; } }
-	delayMicroseconds(10);	// not sure why.
-	while (!readclck) { if (timeout) { return 0; } }  // eat start bit
-	for (i=0; i < 8; i++)
-	{
-		while (readclck)  { if (timeout) { return 0; } }
-		if (readdata)  {
-			data = data | bit;
-		}
-		while (!readclck) { if (timeout) { return 0; } }
-		bit = bit << 1;
-	}
-	
-	// eat parity bit, ignore it.
-	while (readclck)  { if (timeout) { return 0; } }
-	while (!readclck) { if (timeout) { return 0; } }
-	// eat stop bit
-	while (readclck)  { if (timeout) { return 0; } }
-	while (!readclck)  { if (timeout) { return 0; } }
-	goloclck();
-
-	return data;
-}
-
-/*
- * get a reading from the mouse and report it back to the
- * host via the serial line.
- */
-char PS2Mouse::update(void)
-{
-	timer = micros();
-	if (!write(0xeb)) { // ask for data
+char PS2Mouse::initialize() {
+    high(_clockPin);
+    high(_dataPin);
+    if (!reset())
 		return 0;
-	}
-    read(); // ignore ack
-    status = read();
-    x = read();
-    y = read();	
+    checkIntelliMouseExtensions();
+    setResolution(RESOLUTION_8_COUNTS_PER_MM);
+    setScaling(SCALING_1_TO_1);
+    setSampleRate(40);
+    setRemoteMode();
+    delayMicroseconds(100);
 	return 1;
 }
 
+char PS2Mouse::writeByte(char data) {
+    int parityBit = 1;
 
-/*
- * initialize the mouse. Reset it, and place it into remote
- * mode, so we can get the encoder data on demand.
- */
-char PS2Mouse::init(void)
-{
+    high(_dataPin);
+    high(_clockPin);
+    delayMicroseconds(300);
+    low(_clockPin);
+    delayMicroseconds(300);
+    low(_dataPin);
+    delayMicroseconds(10);
+
+    // start bit
+    high(_clockPin);
+    if (!waitForClockState(LOW)) return 0;
+
+    // data
+    for (int i = 0; i < 8; i++) {
+        int dataBit = bitRead(data, i);
+        writeBit(dataBit);
+        parityBit = parityBit ^ dataBit;
+    }
+
+    // parity bit
+    writeBit(parityBit);
+
+    // stop bit
+    high(_dataPin);
+    delayMicroseconds(50);	
+    if (!waitForClockState(LOW)) return 0;
+
+    // wait for mouse to switch modes
+    while ((digitalRead(_clockPin) == LOW) || (digitalRead(_dataPin) == LOW))
+        ;
+
+    // put a hold on the incoming data
+    low(_clockPin);
+	return 1;
+}
+
+char PS2Mouse::writeBit(int bit) {
+    if (bit == HIGH) {
+        high(_dataPin);
+    } else {
+        low(_dataPin);
+    }
+    if (!waitForClockState(HIGH)) return 0;
+    if (!waitForClockState(LOW))  return 0;
+	return 1;
+}
+
+char PS2Mouse::readByte() {
+    char data = 0;
+
+    high(_clockPin);
+    high(_dataPin);
+    delayMicroseconds(50);
+    if (!waitForClockState(LOW))  return 0;
+    delayMicroseconds(5);
+
+    // consume the start bit
+    if (!waitForClockState(HIGH))  return 0;
+
+    // consume 8 bits of data
+    for (int i = 0; i < 8; i++) {
+        bitWrite(data, i, readBit());
+    }
+
+    // consume parity bit (ignored)
+    readBit();
+
+    // consume stop bit
+    readBit();
+
+    // put a hold on the incoming data
+    low(_clockPin);
+
+    return data;
+}
+
+int PS2Mouse::readBit() {
+    if (!waitForClockState(LOW))  return 0;
+    int bit = digitalRead(_dataPin);
+    if (!waitForClockState(HIGH))  return 0;
+    return bit;
+}
+
+void PS2Mouse::setSampleRate(int rate) {
+    writeAndReadAck(SET_SAMPLE_RATE);
+    writeAndReadAck(rate);
+}
+
+char PS2Mouse::writeAndReadAck(int data) {
+    writeByte((char) data);
+    return readByte();
+}
+
+char PS2Mouse::reset() {
+    if (!writeAndReadAck(RESET))
+		return 0;
+	readByte();  // self-test status
+    readByte();  // mouse ID
+	return 1;
+}
+
+void PS2Mouse::checkIntelliMouseExtensions() {
+    // IntelliMouse detection sequence
+    setSampleRate(200);
+    setSampleRate(100);
+    setSampleRate(80);
+
+    char deviceId = getDeviceId();
+    _supportsIntelliMouseExtensions = (deviceId == INTELLI_MOUSE);
+}
+
+char PS2Mouse::getDeviceId() {
+    writeAndReadAck(GET_DEVICE_ID);
+    return readByte();
+}
+
+void PS2Mouse::setScaling(int scaling) {
+    writeAndReadAck(scaling);
+}
+
+void PS2Mouse::setRemoteMode() {
+    writeAndReadAck(SET_REMOTE_MODE);
+}
+
+void PS2Mouse::setResolution(int resolution) {
+    writeAndReadAck(SET_RESOLUTION);
+    writeAndReadAck(resolution);
+}
+
+char PS2Mouse::waitForClockState(int expectedState) {
 	timer = micros();
-    if (!write(0xff)) { // reset mouse
-		return 0;	
+    while (digitalRead(_clockPin) != expectedState) {
+		if ((micros()-timer) > TIMEOUT)
+			return 0;
 	}
-    read(); // ack byte
-    read(); // blank */
-    read(); // blank */
-    if (!write(0xf0)) { // remote mode
-		return 0;	
-	}	
-    read(); // ack
-	return 1;	
+	return 1;
+}
+
+char PS2Mouse::update() {
+    requestData();
+    state.info = readByte();
+	if (!state.info)
+		return 0;
+	
+    state.x = readByte();
+    state.y = readByte();
+
+    if (_supportsIntelliMouseExtensions) {
+        state.wheel = readByte();
+    }
+
+    return 1;
+};
+
+void PS2Mouse::requestData() {
+    writeAndReadAck(REQUEST_DATA);
 }

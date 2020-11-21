@@ -1,27 +1,59 @@
-/*
- * ps2.h - a library to interface with ps2 devices. See comments in
- * ps2.cpp.
- * Written by Chris J. Kiick, January 2008.
- * Release into public domain.
- */
+#ifndef MOUSE_H_
 
-#ifndef ps2_h
-#define ps2_h
+#define MOUSE_H_
 
-#include "Arduino.h"
+typedef struct {
+    unsigned char x, y;
+    unsigned char info;
+    unsigned char wheel;
+} State;
 
-class PS2Mouse
-{	
-	public:
-		char x,y;
-		char status;	
-		PS2Mouse();
-		char init(void);
-		char update(void);
-	private:
-		char write(unsigned char data);
-		char read(void);
+class PS2Mouse {
+private:
+    int _clockPin;
+    int _dataPin;
+    bool _supportsIntelliMouseExtensions;
+
+    void high(int pin);
+
+    void low(int pin);
+
+    char writeAndReadAck(int data);
+
+    char reset();
+
+    void setSampleRate(int rate);
+
+    void checkIntelliMouseExtensions();
+
+    void setResolution(int resolution);
+
+    char getDeviceId();
+
+    void setScaling(int scaling);
+
+    void setRemoteMode();
+
+    char waitForClockState(int expectedState);
+
+    void requestData();
+
+    char readByte();
+
+    int readBit();
+
+    char writeByte(char data);
+
+    char writeBit(int bit);
+
+public:
+    PS2Mouse(int clockPin, int dataPin);
+
+    char initialize();
+
+    char update();
+	
+	State state;
 };
 
-#endif /* ps2_h */
-
+#endif // MOUSE_H_
