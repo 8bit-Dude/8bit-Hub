@@ -10,7 +10,7 @@ Setting up Arduino IDE to program your 8bit-Hub:
 (3) File > Preferences > Sketchbook Location  ---> Set to your local copy of "/Firmware" Folder
     (Restart the Arduino IDE for changes to take effect)
 
-(4) File > Preferences > Additional Boards Manager URLs ---> http://arduino.esp8266.com/stable/package_esp8266com_index.json 
+(4) File > Preferences > Additional Boards Manager URLs ---> https://github.com/esp8266/Arduino/releases/download/2.7.4/package_esp8266com_index.json
 
 (5) Tools > Board > Boards Manager ---> search esp8266, then click install
 
