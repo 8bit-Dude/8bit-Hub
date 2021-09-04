@@ -47,14 +47,14 @@ Flash new sketch (Wifi Part):
 (Switches set to OFF OFF OFF OFF ON ON ON OFF)
 
 (1) Tools > Board > ESP8266 boards > Generic ESP8266 Module
+    Tools > Flash Size > 4MB (FS:2MB OTA:~1019KB)
+    Tools > Erase Flash > All flash contents
 
-(2) Tools > Flash Size > 8MB (FS:6MB OTA:~1019KB)
+(2) Load Hub-ESP8266.ino and edit code
 
-(3) Load Hub-ESP8266.ino and edit code
+(3) Connect Hub to PC, then Tools > Port > Select COM number
 
-(4) Connect Hub to PC, then Tools > Port > Select COM number
-
-(5) Upload sketch, "Et Voila"!
+(4) Upload sketch, "Et Voila"!
 
 Important: Set the switches back to ON ON ON ON OFF OFF OFF OFF after flashing the sketch, otherwise the serial monitor will not work.
 
@@ -79,9 +79,9 @@ Burning the Optiboot boot loader onto a new board:
       #define PIN_MISO	12            >  #define PIN_MISO 50
       #define PIN_SCK	13            >  #define PIN_SCK  52
       
-(5) Tools > Programmer > Arduino as ISP
+(5) Sketch > Upload
 
-(6) Sketch > Upload
+(6) Tools > Programmer > Arduino as ISP
 
 (7) Tools > Board > optiboot-avr (in sketchbook) > Arduino Mega 2560 (Optiboot)
 
