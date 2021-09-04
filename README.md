@@ -47,7 +47,9 @@ Flash new sketch (Wifi Part):
 (Switches set to OFF OFF OFF OFF ON ON ON OFF)
 
 (1) Tools > Board > ESP8266 boards > Generic ESP8266 Module
+
     Tools > Flash Size > 4MB (FS:2MB OTA:~1019KB)
+    
     Tools > Erase Flash > All flash contents
 
 (2) Load Hub-ESP8266.ino and edit code
@@ -65,7 +67,9 @@ Burning the Optiboot boot loader onto a new board:
 2 arduino mega boards are needed for this operation (one is used as progammer).
 
 (1) Connect the boards pins as follows, then connect to USB:
+
     Programmer:  5V  GND  50  51  52  53
+    
       Target:    5V  GND  50  51  52  RST
 
 (2) Tools > Board > Arduino AVR Boards > Arduino Mega or Mega 2560
