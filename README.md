@@ -33,9 +33,11 @@ Flash new sketch (Core Part):
 
 (4) Connect Hub to PC, then Tools > Port > Select COM number
 
-(5) Upload sketch, "Et Voila"!
+(5) Upload sketch
 
-You can use the serial monitor to get information/debugging messages.
+(6) Tools > Serial Monitor ---> Set Baud Rate to 115200
+
+"Et Voila"! You can use the serial monitor to get information/debugging messages.
 If you want to revert to "official" firmware, set:  char megaVersion[5] = "v0.1";
 The Hub will offer you to download latest firmware (e.g. v0.3) next time you boot.
 
@@ -46,7 +48,7 @@ Flash new sketch (Wifi Part):
 
 (1) Tools > Board > ESP8266 boards > Generic ESP8266 Module
 
-(2) Tools > Flash Size > 8MB (FS 6MB)
+(2) Tools > Flash Size > 8MB (FS:6MB OTA:~1019KB)
 
 (3) Load Hub-ESP8266.ino and edit code
 
