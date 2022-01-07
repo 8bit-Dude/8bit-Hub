@@ -2,8 +2,6 @@
 // System libraries
 #include <ArduinoOTA.h>
 #include <EEPROM.h>
-#include <LiquidCrystal_I2C.h>
-#include <picojpeg.h>
 #include <SPI.h>
 #include <SD.h>
 
@@ -13,6 +11,7 @@
 //#define __DEBUG_MOUSE__
 //#define __DEBUG_CMD__
 //#define __DEBUG_COM__
+//#define __DEBUG_IO__
 //#define __DEBUG_PCK__
 //#define __DEBUG_TCP__
 //#define __DEBUG_UDP__
@@ -22,7 +21,7 @@
 // Firmware Version
 char espVersion[5] = "?";
 char espUpdate[5] = "?";
-char megaVersion[5] = "v0.4";
+char megaVersion[5] = "v0.5";
 char megaUpdate[5] = "?";
 char urlEsp[]  = "http://8bit-unity.com/Hub-ESP8266.bin";
 char urlMega[] = "http://8bit-unity.com/Hub-Mega2560.bin";
@@ -95,8 +94,8 @@ const char* fail  = "Update failed!      ";
 #define MODE_ORIC  6
 #define MODE_LYNX  7
 #define HUB_MODES  8
-const char* modeString[HUB_MODES] = {"Please setup", "Apple //", "Atari XL/XE", "BBC", "C64/C128", "NES", "Oric", "Lynx"};
-byte hubMode = MODE_LYNX;
+const char* modeString[HUB_MODES] = {"Please setup", "Apple //", "Atari 8bit", "BBC Micro", "C64/C128", "NES", "Oric", "Lynx"};
+byte hubMode = MODE_NONE;
 
 // COMM Params
 #define FILES    8     // Number of file handles
@@ -104,11 +103,11 @@ byte hubMode = MODE_LYNX;
 #define PACKET   256   // Max. packet length (bytes)
 #define TIMEOUT  1000  // Packet timout (milliseconds)
 
+// HUB Files
+File hubFile[FILES];
+
 // IP Params
 char IP[17] = "Not connected...";
-
-// SD Card Paramds
-File hubFile[FILES];
 
 // Buffers for data exchange with ESP8266
 char serBuffer[PACKET];
@@ -358,9 +357,6 @@ void readJOY() {
 #endif    
 }
 
-#define MAX(a,b) (a>b?a:b)
-#define MIN(a,b) (a>b?b:a)
-
 void readMouse() {
     unsigned char s = readChar();
     signed char x = readChar();
@@ -388,10 +384,13 @@ void readMouse() {
     if (s&4) { joyState[1] &= ~64;  }  // M Button
     if (w<0) { joyState[2] &= ~64;  }  // W Up
     if (w>0) { joyState[2] &= ~128; }  // W Down
-    if (x < 0) { mouseState[0] -= MIN(mouseState[0], -x);    }
-    if (x > 0) { mouseState[0] += MIN(159-mouseState[0], x); }
-    if (y < 0) { mouseState[1] -= MIN(mouseState[1], -y);    }
-    if (y > 0) { mouseState[1] += MIN(199-mouseState[1], y); }
+    if ((x!=0 || y!=0) && (mouseState[0]==255 || mouseState[1] ==255)) {
+      mouseState[0] = 80; mouseState[1] = 100;
+    }
+    if (x<0) { mouseState[0] -= MIN(mouseState[0], -x);    }
+    if (x>0) { mouseState[0] += MIN(159-mouseState[0], x); }
+    if (y<0) { mouseState[1] -= MIN(mouseState[1], -y);    }
+    if (y>0) { mouseState[1] += MIN(199-mouseState[1], y); }
 #ifdef __DEBUG_MOUSE__   
     Serial.print("M:"); Serial.print((s&1)>0); // L but
     Serial.print(",");  Serial.print((s&4)>2); // M but
@@ -402,140 +401,6 @@ void readMouse() {
 #endif    
 }
 
-////////////////////////////////
-//        JPG functions       //
-////////////////////////////////
-/*
-const unsigned char lynxPaletteR[] = {165,  66,  66,  49,  49,  33,  33, 115, 231, 247, 247, 214, 132, 247, 132, 0};
-const unsigned char lynxPaletteG[] = { 16,  49, 132, 198, 198, 132,  82,  82, 115, 231, 148,  49,  33, 247, 132, 0};
-const unsigned char lynxPaletteB[] = {198, 181, 198, 198,  82,  33,  82,  33,  82,   0, 165,  66,  66, 247, 132, 0};
-
-File jpgFile;
-unsigned int jpgSize, jpgOfs;
-
-uint8_t callbackJPG(uint8_t* pBuf, uint8_t buf_size, uint8_t *pBytes_actually_read, void *pCallback_data) {
-    unsigned int n = MIN(jpgSize - jpgOfs, buf_size);
-    *pBytes_actually_read = (uint8_t)(n);
-    jpgFile.read(pBuf,n);
-    jpgOfs += n;
-    return 0;    
-}
-
-void decodeJPG(unsigned char* filename) {
-    // Open file from SD card
-    uint32_t timer = millis();     
-
-    // Open jpeg file from SD card
-    jpgFile = SD.open(filename, FILE_READ);
-    jpgSize = jpgFile.size();
-    jpgOfs = 0;
-
-    // Initialize decoder
-    pjpeg_image_info_t jpgInfo;
-    unsigned char status = pjpeg_decode_init(&jpgInfo, callbackJPG, NULL, 0);
-    if (status) {
-      Serial.print("pjpeg_decode_init() failed with status ");
-      Serial.println(status);
-      if (status == PJPG_UNSUPPORTED_MODE) {
-        Serial.println("Progressive JPEG files are not supported.");
-      }
-      return;
-    }
-    
-    // Open cache file to store decoded image
-    if (SD.exists("cache")) { SD.remove("cache"); }
-    File cacheFile = SD.open("cache", FILE_WRITE);
-    
-    // Scanning variables
-    unsigned int xElt, yElt;
-    unsigned char xElt8, yElt8;
-    unsigned char xMin, xMax, yMin, yMax;
-    unsigned int palDist, palMini;
-    unsigned char palIndex;
-    unsigned char bmp[9][82];
-
-    // Scan through block rows
-    for (unsigned int yMCU=0; yMCU<jpgInfo.m_height; yMCU+=jpgInfo.m_MCUHeight) {
-
-        // Computer's Y coordinate range
-        yMin = (102 * (yMCU                    )) / jpgInfo.m_height;
-        yMax = (102 * (yMCU+jpgInfo.m_MCUHeight)) / jpgInfo.m_height;
-        yMax = MIN(yMax, 102);
-
-        // Reset bmp array
-        for (unsigned int y=yMin; y<yMax; y++) {
-            bmp[y-yMin][0] = 0x52;
-            memset(&bmp[y-yMin][1], 0, 81);
-        }
-
-        // Scan through block cols
-        for (unsigned int xMCU=0; xMCU<jpgInfo.m_width; xMCU+=jpgInfo.m_MCUWidth) {
-
-            // Computer's X coordinate range
-            xMin = (160 * (xMCU                   )) / jpgInfo.m_width;
-            xMax = (160 * (xMCU+jpgInfo.m_MCUWidth)) / jpgInfo.m_width;
-            xMax = MIN(xMax, 160);
-
-            // Decode this block
-            pjpeg_decode_mcu();
-    
-            // Scan Y coordinate range
-            for (unsigned int y=yMin; y<yMax; y++) {
-                yElt = (y * jpgInfo.m_height)/102 - yMCU;  yElt8 = yElt/8;
-                //Serial.print((byte)y); Serial.print(": ");
-    
-                // Scan X coordinate range
-                for (unsigned int x=xMin; x<xMax; x++) {
-                    xElt = (x * jpgInfo.m_width)/160 - xMCU;  xElt8 = xElt/8;
-                    //Serial.print((byte)x); Serial.print(", ");
-    
-                    // Compute offset of element
-                    unsigned int block_ofs = (xElt8 * 8U) + (yElt8 * 16U);
-                    unsigned int elt_oft = 8*(yElt%8) + (xElt%8);
-                    const uint8_t *pSrcR = jpgInfo.m_pMCUBufR + block_ofs + elt_oft;
-                    const uint8_t *pSrcG = jpgInfo.m_pMCUBufG + block_ofs + elt_oft;
-                    const uint8_t *pSrcB = jpgInfo.m_pMCUBufB + block_ofs + elt_oft;
-    
-                    // Find matching palette color
-                    palMini = 3*256;
-                    for (byte i=0; i<16; i++) {
-                        palDist = abs(lynxPaletteR[i] - *pSrcR) + abs(lynxPaletteG[i] - *pSrcG) + abs(lynxPaletteB[i] - *pSrcB);
-                        if (palDist<palMini) {
-                            palIndex = i; 
-                            palMini = palDist;
-                        }
-                    }
-
-                    // Save to bmp buffer
-                    bmp[y-yMin][x/2+1] |= palIndex << (4*((x+1)%2));
-                    //Serial.print(palIndex); Serial.print(",");                
-                }
-                //Serial.println();
-            }
-            //Serial.println();
-        }
-
-        // Write to char file
-        cacheFile.write(&bmp[0][0], 82*(yMax-yMin));
-    }
-
-    // Close files
-    cacheFile.write((byte)0x00);
-    cacheFile.close();  
-    jpgFile.close();
-#ifdef __DEBUG_JPG__ 
-    Serial.println(F("JPEG image info"));
-    Serial.print("Width      : "); Serial.println(jpgInfo.m_width);
-    Serial.print("Height     : "); Serial.println(jpgInfo.m_height);
-    Serial.print("Scan type  : "); Serial.println(jpgInfo.m_scanType);
-    Serial.print("MCU/row    : "); Serial.println(jpgInfo.m_MCUSPerRow);
-    Serial.print("MCU/col    : "); Serial.println(jpgInfo.m_MCUSPerCol);
-    Serial.print("MCU/width  : "); Serial.println(jpgInfo.m_MCUWidth);
-    Serial.print("MCU/height : "); Serial.println(jpgInfo.m_MCUHeight);
-    Serial.print("Render time: "); Serial.print(millis()-timer); Serial.println(" ms");
-#endif  
-}
-*/
 ////////////////////////////////
 //        SD functions        //
 ////////////////////////////////
@@ -586,6 +451,8 @@ void setupSD() {
 ////////////////////////////////
 //        LCD functions       //
 ////////////////////////////////
+
+#include <LiquidCrystal_I2C.h>
 
 LiquidCrystal_I2C lcd(0x27,2,1,0,4,5,6,7);
 
@@ -641,14 +508,50 @@ void displayIP() {
 #define COM_ERR_CORRUPT 4
 #define COM_ERR_RESENT  5
 
+// Packet information
 volatile unsigned char checksum;
 volatile unsigned char hubID, hubLen, *hubBuffer;
-volatile unsigned char prevID = 0, comID = 0, comLen = 0, comBuffer[PACKET];
+volatile unsigned char prevID = 0, comID = 0;
+volatile unsigned char comInBuffer[PACKET], comInLen = 0;
+volatile unsigned char comOutBuffer[PACKET], comOutLen = 0, comOutInd = 0;
 volatile byte comCode = COM_ERR_NODATA;
 
+// Variables used by Atari/C64/NES/Oric interrupts
+volatile unsigned char hasHeader, hasID, hasLen, rcvLen; 
+volatile unsigned char inByte = 0, outByte = 0;
+volatile unsigned char interruptMode = 1;
+volatile unsigned char interruptOffset = 0;
+volatile unsigned long interruptTimer = 0;
+
+// Variables used for Debugging I/O
+#ifdef __DEBUG_IO__
+  volatile unsigned int inRec = 0, outRec = 0, inErr = 0, inSta = 0, outSta = 0;
+  unsigned long timerIO = millis();
+#endif
+    
 void setupCOM() {
     // Setup COM Connection
     switch (hubMode) {
+    case MODE_ATARI:
+        pinMode(3, INPUT_PULLUP); // STROBE
+        pinMode(5, INPUT_PULLUP); // DATA BIT 1
+        pinMode(6, INPUT_PULLUP); // DATA BIT 2
+        pinMode(4, INPUT_PULLUP); // R/W STATE
+        pinMode(7, OUTPUT);       // READY (HUB)
+        PORTH &= ~_BV(PH4);       // Pin 7 LOW == READY
+        attachInterrupt(digitalPinToInterrupt(3), atariInterrupt, FALLING);   
+        break;
+    case MODE_C64:
+        pinMode(18, INPUT_PULLUP); // STROBE
+        pinMode(6,  INPUT_PULLUP); // R/W DATA BIT 1
+        pinMode(5,  INPUT_PULLUP); // R/W DATA BIT 2
+        pinMode(4,  INPUT_PULLUP); // R/W DATA BIT 3
+        pinMode(3,  INPUT_PULLUP); // R/W DATA BIT 4
+        pinMode(17, INPUT_PULLUP); // R/W STATE
+        pinMode(16, OUTPUT);       // READY (HUB)
+        PORTH &= ~_BV(PH1);        // Pin 16 LOW == READY   
+        attachInterrupt(digitalPinToInterrupt(18), c64Interrupt, FALLING);    
+        break;   
     case MODE_LYNX:
         // Setup Serial 2 on pins 16/17
         Serial2.begin(62500, SERIAL_8N2);   // Lynx comm (Bauds 62500, 41666, 9600)
@@ -657,16 +560,271 @@ void setupCOM() {
         Serial2.flush();
         Serial2.readString();
         break;
+    case MODE_NES:
+        pinMode(18, INPUT_PULLUP); // STROBE
+        pinMode(7,  INPUT_PULLUP); // DATA IN 1
+        pinMode(4,  OUTPUT);       // DATA OUT 1
+        pinMode(5,  OUTPUT);       // DATA OUT 2
+        pinMode(16, INPUT_PULLUP); // R/W STATE
+        pinMode(17, INPUT_PULLUP); // READY (PC)
+        pinMode(6,  OUTPUT);       // READY (HUB)
+        PORTH &= ~_BV(PH3);        // Pin 6 HIGH (inverted) == READY
+        attachInterrupt(digitalPinToInterrupt(18), nesInterrupt, RISING);           
+        break;   
     case MODE_ORIC:
-        oricPort(INPUT);
-        pinMode(2, OUTPUT);       // ACKNOW
-        digitalWrite(2, LOW);          
-        pinMode(3, INPUT_PULLUP); // STROBE
-        attachInterrupt(digitalPinToInterrupt(3), oricRecvPacket, FALLING);    
+        pinMode(3,  INPUT_PULLUP); // STROBE
+        pinMode(4,  INPUT_PULLUP); // R/W DATA BIT 1
+        pinMode(5,  INPUT_PULLUP); // R/W DATA BIT 2
+        pinMode(6,  INPUT_PULLUP); // R/W DATA BIT 3
+        pinMode(7,  INPUT_PULLUP); // R/W DATA BIT 4
+        pinMode(17, INPUT_PULLUP); // R/W STATE 
+        pinMode(16, INPUT_PULLUP); // READY (PC)
+        pinMode(2,  OUTPUT);       // ACKNOW (HUB)
+        PORTE |=  _BV(PE4);        // Pin 2 HIGH           
+        attachInterrupt(digitalPinToInterrupt(3), oricInterrupt, FALLING);
+        break;  
     }
 }
 
 void preparePacket() {
+    // Do we have packet ready to send?
+    if (packetHead) {
+        hubID = packetHead->ID;
+        hubLen = packetHead->len;
+        hubBuffer = packetHead->data;
+    } else {
+        hubLen = 0;
+    }
+    
+    // Packet data: header, states, length, data, checksum
+    unsigned char j =0;
+    comOutBuffer[j++] = outByte = 170;
+    comOutBuffer[j++] = checksum = (hubID << 4) + (comID & 0x0f);
+    for (byte i=0; i<4; i++)      { comOutBuffer[j++] = joyState[i];   checksum += joyState[i]; }
+    for (byte i=0; i<2; i++)      { comOutBuffer[j++] = mouseState[i]; checksum += mouseState[i]; }
+    comOutBuffer[j++] = hubLen;    
+    for (byte i=0; i<hubLen; i++) { comOutBuffer[j++] = hubBuffer[i];  checksum += hubBuffer[i]; }
+    comOutBuffer[j++] = checksum; 
+
+    // Packet index/length
+    comOutInd = 0; 
+    comOutLen = j;
+}
+
+boolean checkPacket() {
+    // Verify checksum
+    checksum = comID;
+    for (byte i=0; i<comInLen; i++)
+        checksum += comInBuffer[i]; 
+    if (comInBuffer[comInLen] != checksum) { 
+        comCode = COM_ERR_CORRUPT;
+        return false;
+    }
+    
+    // All good: process ID related stuff
+    comCode = COM_ERR_OK;
+    comInBuffer[comInLen] = 0;
+    if (comInLen && ((comID & 0x0f) == (prevID & 0x0f)))
+        comCode = COM_ERR_RESENT; // Check if we already got this packet from client?
+    if ((comID >> 4) != (prevID >> 4))
+        popPacket(comID >> 4);    // Check if last packet from hub was acknowledged
+    prevID = comID;
+
+    // Return result
+    return (comCode == COM_ERR_OK || comCode == COM_ERR_RESENT);
+}
+
+// Function used by Atari/C64/NES/Oric interrupts
+void processByte() {
+    // Check header
+    if (!hasHeader) {
+        if (inByte == 170) {
+            hasHeader = 1; 
+        } else {
+        #ifdef __DEBUG_IO__
+            inErr++;
+        #endif          
+        }       
+        return;
+    }
+    
+    // Check ID
+    if (!hasID) {
+      comID = inByte;
+      hasID = 1;
+      return;
+    }
+  
+    // Check for length
+    if (!hasLen) {
+      comInLen = inByte;
+      rcvLen = 0;
+      hasLen = 1;
+      return;
+    }
+  
+    // Add data to buffer
+    comInBuffer[rcvLen++] = inByte;
+  
+    // Check if packet was fully received (including extra byte for checksum)
+    if (rcvLen < comInLen+1) return;
+  
+    // Check packet and reset state
+    checkPacket();
+    preparePacket();
+
+    // Reset incoming state
+    hasHeader = 0;
+    hasID = 0;
+    hasLen = 0;
+    return;     
+}
+
+/////////////////////////////////
+//     ATARI Communication     //
+/////////////////////////////////
+
+void atariRead() {
+    // Setup pins for input
+    DDRH &= ~_BV(PH3); PORTH |= _BV(PH3);  
+    DDRE &= ~_BV(PE3); PORTE |= _BV(PE3);  
+    delayMicroseconds(10);
+    
+    // Read 2 bits from computer      
+    inByte |= ((PINH & _BV(PH3))>0) << (interruptOffset++); 
+    inByte |= ((PINE & _BV(PE3))>0) << (interruptOffset++);
+}
+
+void atariWrite() {
+    // Setup pins for output
+    DDRH |= _BV(PH3); 
+    DDRE |= _BV(PE3); 
+    
+    // Write 2 bits to computer      
+    if (outByte & (1 << interruptOffset++)) { PORTH |= _BV(PH3); } else { PORTH &= ~_BV(PH3); }
+    if (outByte & (1 << interruptOffset++)) { PORTE |= _BV(PE3); } else { PORTE &= ~_BV(PE3); }
+}
+
+void atariInterrupt() {
+    // Lock ready pin
+    PORTH |= _BV(PH4);  // HIGH    
+
+    // Check R/W pin
+    if (!(PING & _BV(PG5))) {
+        atariRead();
+        interruptMode = 1;
+    } else {
+        atariWrite();
+        interruptMode = 0;
+    }
+
+    // If byte complete?
+    if (interruptOffset < 8) {
+        // Update timer
+        interruptTimer = millis();
+    } else {
+        // Reset offset 
+        interruptOffset = 0;
+      
+        // Process data
+        if (interruptMode) {
+            processByte();
+            inByte = 0;
+        #ifdef __DEBUG_IO__  
+            inRec++;         
+        #endif          
+        } else {
+            outByte = comOutBuffer[++comOutInd];
+        #ifdef __DEBUG_IO__  
+            outRec++;         
+        #endif          
+        }
+ 
+        // Unlock ready pin
+        PORTH &= ~_BV(PH4);  // LOW            
+    }
+}
+
+////////////////////////////////
+//      C64 Communication     //
+////////////////////////////////
+
+void c64Read() {
+    // Setup pins for input
+    DDRH &= ~_BV(PH3); PORTH |= _BV(PH3);  // pin 6
+    DDRE &= ~_BV(PE3); PORTE |= _BV(PE3);  // pin 5
+    DDRG &= ~_BV(PG5); PORTG |= _BV(PG5);  // pin 4
+    DDRE &= ~_BV(PE5); PORTE |= _BV(PE5);  // pin 3
+    
+    // Read 4 bits from computer      
+    inByte |= ((PINH & _BV(PH3))>0) << (interruptOffset++); 
+    inByte |= ((PINE & _BV(PE3))>0) << (interruptOffset++); 
+    inByte |= ((PING & _BV(PG5))>0) << (interruptOffset++); 
+    inByte |= ((PINE & _BV(PE5))>0) << (interruptOffset++);
+}
+
+void c64Write() {
+    // Setup pins for output
+    DDRH |= _BV(PH3);   // pin 6
+    DDRE |= _BV(PE3);   // pin 5
+    DDRG |= _BV(PG5);   // pin 4
+    DDRE |= _BV(PE5);   // pin 3
+    
+    // Write 4 bits to computer      
+    if (outByte & (1 << interruptOffset++)) { PORTH |= _BV(PH3); } else { PORTH &= ~_BV(PH3); }
+    if (outByte & (1 << interruptOffset++)) { PORTE |= _BV(PE3); } else { PORTE &= ~_BV(PE3); }
+    if (outByte & (1 << interruptOffset++)) { PORTG |= _BV(PG5); } else { PORTG &= ~_BV(PG5); }
+    if (outByte & (1 << interruptOffset++)) { PORTE |= _BV(PE5); } else { PORTE &= ~_BV(PE5); }
+}
+
+void c64Interrupt() {
+    // Lock ready pin
+    PORTH |= _BV(PH1);  // HIGH   
+
+    // Check R/W pin
+    if (!(PINH & _BV(PH0))) {
+        c64Read();
+        interruptMode = 1;
+    } else {
+        c64Write();
+        interruptMode = 0;
+    }
+
+    // If byte complete?
+    if (interruptOffset < 8) {
+      // Reset time
+      interruptTimer = millis();
+    } else {      
+      // Reset offset 
+      interruptOffset = 0;
+      
+      // Process data
+      if (interruptMode) {
+          processByte();
+          inByte = 0;
+      #ifdef __DEBUG_IO__  
+          inRec++;
+      #endif          
+      } else {
+          outByte = comOutBuffer[++comOutInd];
+      #ifdef __DEBUG_IO__  
+          outRec++;
+      #endif          
+      } 
+
+      // Unlock ready pin
+      PORTH &= ~_BV(PH1);  // LOW   
+    }
+}
+
+////////////////////////////////
+//     LYNX Communication     //
+////////////////////////////////
+
+unsigned char lynxBitPeriod = 16;   // Bauds: 62500=16 / 41666=24 / 9600=104
+unsigned long lynxTimer;
+
+void lynxPreparePacket() {
     // Do we have packet ready to send?
     if (packetHead) {
         hubID = packetHead->ID;
@@ -682,33 +840,6 @@ void preparePacket() {
     for (byte i=0; i<2; i++)   { checksum += mouseState[i]; }
     for (byte i=0; i<hubLen; i++) { checksum += hubBuffer[i]; }
 }
-
-void checkPacket() {
-    // Verify checksum
-    checksum = comID;
-    for (byte i=0; i<comLen; i++)
-        checksum += comBuffer[i]; 
-    if (comBuffer[comLen] != checksum) { 
-        comCode = COM_ERR_CORRUPT;
-        return;
-    }
-    
-    // All good: process ID related stuff
-    comCode = COM_ERR_OK;
-    comBuffer[comLen] = 0;
-    if (comLen && ((comID & 0x0f) == (prevID & 0x0f)))
-        comCode = COM_ERR_RESENT; // Check if we already got this packet from client?
-    if ((comID >> 4) != (prevID >> 4))
-        popPacket(comID >> 4);    // Check if last packet from hub was acknowledged
-    prevID = comID;
-}
-
-////////////////////////////////
-//     LYNX Communication     //
-////////////////////////////////
-
-unsigned char lynxBitPeriod = 16;   // Bauds: 62500=16 / 41666=24 / 9600=104
-unsigned long lynxTimer;
 
 void lynxWrite(char value) {
     unsigned char i, parity = 0, mask = 1;
@@ -768,151 +899,174 @@ void lynxSendPacket() {
 
 void lynxRecvPacket() {  
     // Have we got data?
-    if (!Serial2.available()) { comCode = COM_ERR_NODATA; return; }
+    if (!Serial2.available()) { comCode = COM_ERR_NODATA; return false; }
 
     // Check Header
-    if (Serial2.read() != 170) { comCode = COM_ERR_HEADER; return; }
-
+    if (Serial2.read() != 170) { comCode = COM_ERR_HEADER; return false; }
+  #ifdef __DEBUG_IO__  
+    inRec++;
+  #endif
+  
     // Get RecvID
-    if (!Serial2.readBytes((unsigned char*)&comID, 1)) { comCode = COM_ERR_TRUNCAT; return; }
+    if (!Serial2.readBytes((unsigned char*)&comID, 1)) { comCode = COM_ERR_TRUNCAT; return false; }
+  #ifdef __DEBUG_IO__  
+    inRec++;
+  #endif
 
     // Get Length
-    if (!Serial2.readBytes((unsigned char*)&comLen, 1)) { comCode = COM_ERR_TRUNCAT; return; }
+    if (!Serial2.readBytes((unsigned char*)&comInLen, 1)) { comCode = COM_ERR_TRUNCAT; return false; }
+  #ifdef __DEBUG_IO__  
+    inRec++;
+  #endif
 
     // Get Buffer+Footer
-    if (!Serial2.readBytes((unsigned char*)comBuffer, comLen+1)) { comCode = COM_ERR_TRUNCAT; return; }
+    if (!Serial2.readBytes((unsigned char*)comInBuffer, comInLen+1)) { comCode = COM_ERR_TRUNCAT; return false; }
+  #ifdef __DEBUG_IO__  
+    inRec += comInLen+1;
+  #endif
 
-    // Check Packet for Corruption
+    // No Problem so far
     checkPacket();
+}
+
+/////////////////////////////////
+//      NES Communication      //
+/////////////////////////////////
+
+void nesRead() {
+    // Read 1 bit from computer      
+    inByte |= ((PINH & _BV(PH4))>0) << (interruptOffset++);  // Pin 7 
+}
+
+void nesWrite() {
+    // Write 2 bits to computer      
+    if (outByte & (1 << interruptOffset++)) { PORTG &= ~_BV(PG5); } else { PORTG |= _BV(PG5); }
+    if (outByte & (1 << interruptOffset++)) { PORTE &= ~_BV(PE3); } else { PORTE |= _BV(PE3); } 
+}
+
+void nesInterrupt() { 
+    // Check R/W pin
+    if (!(PINH & _BV(PH0))) return;
+    
+    // Lock ready pin
+    PORTH |= _BV(PH3);  // Pin 6 LOW (inverted)       
+    
+    // Check R/W pin
+    if (!(PINH & _BV(PH1))) {
+        nesRead();
+        interruptMode = 1;
+    } else {
+        nesWrite();
+        interruptMode = 0;
+    }
+    
+    // If byte complete?
+    if (interruptOffset < 8) {
+        // Update timer
+        interruptTimer = millis();
+    } else {
+        // Reset offset 
+        interruptOffset = 0;
+      
+        // Process data
+        if (interruptMode) {
+            processByte();
+            inByte = 0;
+        #ifdef __DEBUG_IO__  
+            inRec++;         
+        #endif          
+        } else {
+            outByte = comOutBuffer[++comOutInd];
+        #ifdef __DEBUG_IO__  
+            outRec++;         
+        #endif          
+        }
+                
+        // Unlock ready pin
+        delayMicroseconds(10);
+        PORTH &= ~_BV(PH3); // Pin 6 HIGH (inverted)          
+    }
 }
 
 ////////////////////////////////
 //     ORIC Communication     //
 ////////////////////////////////
 
-// Swith data pins status (I/O)
-void oricPort(byte state) {
-    // Faster pin switching (takes 4us)
-    if (state == OUTPUT) {
-        DDRG |= _BV(PG5);
-        DDRE |= _BV(PE3);
-        DDRH |= _BV(PH3);
-        DDRH |= _BV(PH4);
-        DDRD |= _BV(PD2);
-        DDRD |= _BV(PD3);
-        DDRH |= _BV(PH0);    
-        DDRH |= _BV(PH1);    
+void oricRead() {
+    // Setup pins for input
+    DDRG &= ~_BV(PG5);   // Pin 4
+    DDRE &= ~_BV(PE3);   // Pin 5
+    DDRH &= ~_BV(PH3);   // Pin 6
+    DDRH &= ~_BV(PH4);   // Pin 7
+
+    // Read 4 bits from computer      
+    inByte |= ((PING & _BV(PG5))>0) << (interruptOffset++); 
+    inByte |= ((PINE & _BV(PE3))>0) << (interruptOffset++); 
+    inByte |= ((PINH & _BV(PH3))>0) << (interruptOffset++); 
+    inByte |= ((PINH & _BV(PH4))>0) << (interruptOffset++);    
+}
+
+void oricWrite() {
+    // Setup pins for output
+    DDRG |= _BV(PG5);   // Pin 4
+    DDRE |= _BV(PE3);   // Pin 5
+    DDRH |= _BV(PH3);   // Pin 6
+    DDRH |= _BV(PH4);   // Pin 7
+
+    // Write 4 bits to computer      
+    if (outByte & (1 << interruptOffset++)) { PORTG |= _BV(PG5); } else { PORTG &= ~_BV(PG5); }
+    if (outByte & (1 << interruptOffset++)) { PORTE |= _BV(PE3); } else { PORTE &= ~_BV(PE3); }
+    if (outByte & (1 << interruptOffset++)) { PORTH |= _BV(PH3); } else { PORTH &= ~_BV(PH3); }
+    if (outByte & (1 << interruptOffset++)) { PORTH |= _BV(PH4); } else { PORTH &= ~_BV(PH4); }
+}
+
+void oricInterrupt() {
+    // Check ready pin (PC)
+    if (!(PINH & _BV(PH1))) {
+        // Setup pins for input
+        DDRG &= ~_BV(PG5);   // Pin 4
+        DDRE &= ~_BV(PE3);   // Pin 5
+        DDRH &= ~_BV(PH3);   // Pin 6
+        DDRH &= ~_BV(PH4);   // Pin 7
+        return;   
+    }
+
+    // Check R/W pin
+    if (!(PINH & _BV(PH0))) {
+        oricRead();
+        interruptMode = 1;
     } else {
-        DDRG &= ~_BV(PG5);
-        DDRE &= ~_BV(PE3);
-        DDRH &= ~_BV(PH3);
-        DDRH &= ~_BV(PH4);
-        DDRD &= ~_BV(PD2);
-        DDRD &= ~_BV(PD3);
-        DDRH &= ~_BV(PH0);    
-        DDRH &= ~_BV(PH1);    
+        oricWrite();
+        interruptMode = 0;
     }
-}
 
-// Read from pins
-unsigned char oricRead() {
-    // Faster pin reading (takes 8us)
-    unsigned char input = 0;
-    input |= ((PING & _BV(PG5))>0) << 0;
-    input |= ((PINE & _BV(PE3))>0) << 1;
-    input |= ((PINH & _BV(PH3))>0) << 2;
-    input |= ((PINH & _BV(PH4))>0) << 3;
-    input |= ((PIND & _BV(PD2))>0) << 4;
-    input |= ((PIND & _BV(PD3))>0) << 5;
-    input |= ((PINH & _BV(PH0))>0) << 6;
-    input |= ((PINH & _BV(PH1))>0) << 7;
-    return input;   
-}
+    // Cycle ACKNOW pin (HUB)
+    PORTE &= ~_BV(PE4);      // Pin 2 LOW
+    delayMicroseconds(10);   
+    PORTE |=  _BV(PE4);      // Pin 2 HIGH     
 
-// Write to pins
-void oricWrite(byte value) {
-    // Faster pin writing
-    if (value &   1) { PORTG |= _BV(PG5); } else { PORTG &= ~_BV(PG5); }
-    if (value &   2) { PORTE |= _BV(PE3); } else { PORTE &= ~_BV(PE3); }
-    if (value &   4) { PORTH |= _BV(PH3); } else { PORTH &= ~_BV(PH3); }
-    if (value &   8) { PORTH |= _BV(PH4); } else { PORTH &= ~_BV(PH4); }
-    if (value &  16) { PORTD |= _BV(PD2); } else { PORTD &= ~_BV(PD2); }
-    if (value &  32) { PORTD |= _BV(PD3); } else { PORTD &= ~_BV(PD3); }
-    if (value &  64) { PORTH |= _BV(PH0); } else { PORTH &= ~_BV(PH0); }
-    if (value & 128) { PORTH |= _BV(PH1); } else { PORTH &= ~_BV(PH1); }
-
-    // Blip ACKNOW
-    PORTE |= _BV(PE4);
-    delayMicroseconds(10);
-    PORTE &= ~_BV(PE4);
-    delayMicroseconds(200);
-}
-
-void oricSendPacket() {
-    // Switch pins to output
-    oricPort(OUTPUT);
-    delayMicroseconds(50);
-
-    // Send: header, states, length, data, checksum
-    oricWrite(170);
-    oricWrite((hubID << 4) + (comID & 0x0f));
-    for (byte i=0; i<4; i++)   { oricWrite(joyState[i]); }
-    for (byte i=0; i<2; i++)   { oricWrite(mouseState[i]); }
-    oricWrite(hubLen);
-    for (byte i=0; i<hubLen; i++) { oricWrite(hubBuffer[i]); }
-    oricWrite(checksum);
-    
-    // Switch pins back to input
-    oricPort(INPUT);
-}
-
-volatile unsigned char hasHeader, hasID, hasLen, rcvLen; 
-
-void oricRecvPacket() {
-    // Read byte from computer  
-    unsigned char data = oricRead();
-
-    // Check header
-    if (!hasHeader) {
-        switch (data) {
-        case 85:
-            checkPacket();
-            preparePacket();
-            oricSendPacket(); 
-            return;
-        case 170:
-            hasHeader = 1; 
-            return;
-        default:
-            return;
+    // If byte complete?
+    if (interruptOffset < 8) {
+        // Update timer
+        interruptTimer = millis();  
+    } else {              
+        // Reset offset/timer 
+        interruptOffset = 0;
+      
+        // Process data
+        if (interruptMode) {
+            processByte();
+            inByte = 0;
+        #ifdef __DEBUG_IO__  
+            inRec++;         
+        #endif          
+        } else {
+            outByte = comOutBuffer[++comOutInd];
+        #ifdef __DEBUG_IO__  
+            outRec++;         
+        #endif          
         }
-    }
-    
-    // Check ID
-    if (!hasID) {
-      comID = data;
-      hasID = 1;
-      return;
-    }
-  
-    // Check for length
-    if (!hasLen) {
-      comLen = data;
-      rcvLen = 0;
-      hasLen = 1;
-      return;
-    }
-  
-    // Add data to buffer
-    comBuffer[rcvLen++] = data;
-  
-    // Check if packet was fully received (including extra byte for checksum)
-    if (rcvLen < comLen+1) { return; }
-  
-    // Check packet and reset state (it will be processed in main loop)
-    hasHeader = 0;
-    hasID = 0;
-    hasLen = 0;
+    }      
 }
 
 /////////////////////////////
@@ -978,7 +1132,7 @@ unsigned char readBuffer() {
         timeout = millis()+10;    
         while (!Serial3.available()) {
             if (millis() > timeout) {
-            #if defined(__DEBUG_CMD__)
+            #ifdef __DEBUG_CMD__
                 Serial.print("ESP: Timeout (");
                 Serial.print(i);
                 Serial.print("/");
@@ -1028,7 +1182,7 @@ void readUdp() {
     char slot = readChar(); // slot
     if (readBuffer()) {
         pushPacket(HUB_UDP_RECV, slot);  
-    #if defined(__DEBUG_UDP__)
+    #ifdef __DEBUG_UDP__
         Serial.print("UDP RECV: ");
         Serial.write(serBuffer, serLen); 
         Serial.print("\n");
@@ -1041,7 +1195,7 @@ void readTcp() {
     char slot = readChar(); // slot
     if (readBuffer()) {
         pushPacket(HUB_TCP_RECV, slot);  
-    #if defined(__DEBUG_TCP__)
+    #ifdef __DEBUG_TCP__
         Serial.print("TCP RECV: ");
         Serial.write(serBuffer, serLen); 
         Serial.print("\n");
@@ -1053,7 +1207,7 @@ void readWeb() {
     // Store data into packet
     if (readBuffer()) {
         pushPacket(HUB_WEB_RECV, -1);
-    #if defined(__DEBUG_WEB__)
+    #ifdef __DEBUG_WEB__
         Serial.print("WEB RECV: ");
         Serial.write(serBuffer, serLen); 
         Serial.print("\n");
@@ -1083,7 +1237,7 @@ void getHttp() {
             memcpy(serBuffer, (char*)&urlSize, 4); serLen = 4;
             pushPacket(HUB_URL_GET, -1);
         }
-    #if defined(__DEBUG_URL__)
+    #ifdef __DEBUG_URL__
         Serial.print("URL GET: ");
         Serial.print(urlSize); Serial.println(" bytes");
     #endif     
@@ -1102,7 +1256,7 @@ void readHttp() {
                 InternalStorage.write(serBuffer[i]);
             break;
         }
-    #if defined(__DEBUG_URL__)
+    #ifdef __DEBUG_URL__
         Serial.print("URL READ: ");
         Serial.print(serLen); Serial.println(" bytes");         
     #endif     
@@ -1173,7 +1327,7 @@ void processComCMD() {
     unsigned char tmp;
     unsigned int offset;
     unsigned long length;   
-    lastComCMD = comBuffer[0];
+    lastComCMD = comInBuffer[0];
     switch (lastComCMD) {  
     case HUB_SYS_RESET:
         // Reset packets and files                
@@ -1194,69 +1348,69 @@ void processComCMD() {
 
     case HUB_FILE_OPEN:
         // Check if file was previously opened
-        if (hubFile[comBuffer[1]])
-            hubFile[comBuffer[1]].close();
+        if (hubFile[comInBuffer[1]])
+            hubFile[comInBuffer[1]].close();
         
         // Open file (modes are 0:read, 1:write, 2:append)
-        switch (comBuffer[2]) {
+        switch (comInBuffer[2]) {
         case 0:                
-            hubFile[comBuffer[1]] = SD.open(&comBuffer[3], FILE_READ); 
+            hubFile[comInBuffer[1]] = SD.open(&comInBuffer[3], FILE_READ); 
             break;
         case 1:
-            if (SD.exists(&comBuffer[3])) { SD.remove(&comBuffer[3]); }
-            hubFile[comBuffer[1]] = SD.open(&comBuffer[3], FILE_WRITE); 
+            if (SD.exists(&comInBuffer[3])) { SD.remove(&comInBuffer[3]); }
+            hubFile[comInBuffer[1]] = SD.open(&comInBuffer[3], FILE_WRITE); 
             break;
         case 2:                
-            hubFile[comBuffer[1]] = SD.open(&comBuffer[3], FILE_WRITE);
+            hubFile[comInBuffer[1]] = SD.open(&comInBuffer[3], FILE_WRITE);
             break;
         }
 
         // Send back file size
-        length = hubFile[comBuffer[1]].size();
+        length = hubFile[comInBuffer[1]].size();
         memcpy(serBuffer, (char*)&length, 4); serLen = 4;
-        pushPacket(HUB_FILE_OPEN, comBuffer[1]);
+        pushPacket(HUB_FILE_OPEN, comInBuffer[1]);
         break;
 
     case HUB_FILE_SEEK:
         // Seek file position (offset from beginning)
-        offset = (comBuffer[3] * 256) + comBuffer[2];
-        if (hubFile[comBuffer[1]])
-            hubFile[comBuffer[1]].seek(offset);
+        offset = (comInBuffer[3] * 256) + comInBuffer[2];
+        if (hubFile[comInBuffer[1]])
+            hubFile[comInBuffer[1]].seek(offset);
         break;
 
     case HUB_FILE_READ:
-        if (hubFile[comBuffer[1]]) {
+        if (hubFile[comInBuffer[1]]) {
             // Read chunk from file
             serLen = 0;
-            while (hubFile[comBuffer[1]].available() && tmp<comBuffer[2])
-                serBuffer[serLen++] = hubFile[comBuffer[1]].read();
+            while (hubFile[comInBuffer[1]].available() && tmp<comInBuffer[2])
+                serBuffer[serLen++] = hubFile[comInBuffer[1]].read();
             pushPacket(HUB_FILE_READ, -1);
         }
         break;
 
     case HUB_FILE_WRITE:
-        if (hubFile[comBuffer[1]]) 
-            hubFile[comBuffer[1]].write((unsigned char*)&comBuffer[2], comLen-3);
+        if (hubFile[comInBuffer[1]]) 
+            hubFile[comInBuffer[1]].write((unsigned char*)&comInBuffer[2], comInLen-3);
         break;
 
     case HUB_FILE_CLOSE:
-        if (hubFile[comBuffer[1]]) 
-            hubFile[comBuffer[1]].close();
+        if (hubFile[comInBuffer[1]]) 
+            hubFile[comInBuffer[1]].close();
         break;                          
       
     case HUB_UDP_OPEN:
         // Forward CMD to ESP
         writeCMD(HUB_UDP_OPEN);
-        writeChar(comBuffer[1]); writeChar(comBuffer[2]);
-        writeChar(comBuffer[3]); writeChar(comBuffer[4]);
-        writeInt(comBuffer[5]+256*comBuffer[6]); 
-        writeInt(comBuffer[7]+256*comBuffer[8]);
+        writeChar(comInBuffer[1]); writeChar(comInBuffer[2]);
+        writeChar(comInBuffer[3]); writeChar(comInBuffer[4]);
+        writeInt(comInBuffer[5]+256*comInBuffer[6]); 
+        writeInt(comInBuffer[7]+256*comInBuffer[8]);
         break;
 
     case HUB_UDP_SEND:
         // Forward CMD to ESP
         writeCMD(HUB_UDP_SEND);
-        writeBuffer(&comBuffer[1], comLen-1);
+        writeBuffer(&comInBuffer[1], comInLen-1);
         break;
 
     case HUB_UDP_CLOSE:
@@ -1267,15 +1421,15 @@ void processComCMD() {
     case HUB_TCP_OPEN:
         // Forward CMD to ESP
         writeCMD(HUB_TCP_OPEN);
-        writeChar(comBuffer[1]); writeChar(comBuffer[2]);
-        writeChar(comBuffer[3]); writeChar(comBuffer[4]);
-        writeInt(comBuffer[5]+256*comBuffer[6]); 
+        writeChar(comInBuffer[1]); writeChar(comInBuffer[2]);
+        writeChar(comInBuffer[3]); writeChar(comInBuffer[4]);
+        writeInt(comInBuffer[5]+256*comInBuffer[6]); 
         break;
 
     case HUB_TCP_SEND:
         // Forward CMD to ESP
         writeCMD(HUB_TCP_SEND);
-        writeBuffer(&comBuffer[1], comLen-1);
+        writeBuffer(&comInBuffer[1], comInLen-1);
         break;
 
     case HUB_TCP_CLOSE:
@@ -1286,20 +1440,20 @@ void processComCMD() {
     case HUB_WEB_OPEN:
         // Forward CMD to ESP
         writeCMD(HUB_WEB_OPEN);
-        writeInt(comBuffer[1]+256*comBuffer[2]); // Port
-        writeInt(comBuffer[3]+256*comBuffer[4]); // TimeOut
+        writeInt(comInBuffer[1]+256*comInBuffer[2]); // Port
+        writeInt(comInBuffer[3]+256*comInBuffer[4]); // TimeOut
         break; 
 
     case HUB_WEB_HEADER:
         // Forward CMD to ESP
         writeCMD(HUB_WEB_HEADER);
-        writeBuffer(&comBuffer[1], comLen-1);                 
+        writeBuffer(&comInBuffer[1], comInLen-1);                 
         break;
 
     case HUB_WEB_BODY:
         // Forward CMD to ESP
         writeCMD(HUB_WEB_BODY);
-        writeBuffer(&comBuffer[1], comLen-1);        
+        writeBuffer(&comInBuffer[1], comInLen-1);        
         break;
 
     case HUB_WEB_SEND:
@@ -1315,19 +1469,19 @@ void processComCMD() {
     case HUB_URL_GET:
         // Forward CMD to ESP
         writeCMD(HUB_URL_GET);
-        writeBuffer(&comBuffer[1], comLen-1);
+        writeBuffer(&comInBuffer[1], comInLen-1);
         break;                                    
 
     case HUB_URL_READ:
         // Forward CMD to ESP
         writeCMD(HUB_URL_READ);
-        writeChar(comBuffer[1]);
+        writeChar(comInBuffer[1]);
         break;
     }
 #ifdef __DEBUG_CMD__
     Serial.print("COM: "); 
     Serial.print(cmdString[lastComCMD]); Serial.print(" (");
-    Serial.print(comLen-1, DEC); Serial.println(")");
+    Serial.print(comInLen-1, DEC); Serial.println(")");
 #endif
 }
 
@@ -1790,7 +1944,7 @@ void runTests() {
     lcd.setCursor(0, 1); lcd.print("Joy2: , , , , ,");
     lcd.setCursor(0, 2); lcd.print("Joy3: , , , , ,");
     lcd.setCursor(0, 3); lcd.print("Mous:   ,   , , , ,");
-    uint32_t timeout = millis()+30000;
+    uint32_t timeout = millis()+60000;
     while (millis()<timeout) {
         // Check Joysticks
         readJOY();
@@ -2255,7 +2409,6 @@ void setup() {
     lcd.setCursor(0,1);
     lcd.print("Booting...          ");
     setupESP();
-    setupCOM();
     setupSD();
 
     // Check for Updates
@@ -2269,12 +2422,15 @@ void setup() {
     displayMode();
     displaySD();
     displayIP();
+
+    // Initiate COM
+    setupCOM();    
 }
 
 #ifdef __DEBUG_COM__
   int comCnt, comErr[6];
+  long comTime1, comTime2;
 #endif
-long comTime1, comTime2;
 
 void loop() { 
     // Check packets time-out
@@ -2288,40 +2444,220 @@ void loop() {
         processEspCMD();
 
     // Process COM I/O
+    if (hubMode == MODE_ATARI || hubMode == MODE_C64 || hubMode == MODE_NES || hubMode == MODE_ORIC) {
+        // Check if data burst stalled (allow extra time for VBI/DLI interrupts)
+        if (interruptOffset && (millis()-interruptTimer) > 10) {
+            interruptOffset = 0; 
+            hasHeader = 0;
+            inByte = 0;
+            if (hubMode == MODE_ATARI)
+                PORTH &= ~_BV(PH4);  // Pin 7 LOW
+            if (hubMode == MODE_C64)
+                PORTH &= ~_BV(PH1);  // Pin 16 LOW   
+            if (hubMode == MODE_NES)    
+                PORTH &= ~_BV(PH3);  // Pin 6 HIGH (inverted) 
+        #ifdef __DEBUG_IO__  
+            if (interruptMode)              
+                inSta++;
+            else
+                outSta++;
+        #endif    
+        } 
+    }
     if (hubMode == MODE_LYNX) {
         // Process Lynx Communication
+    #ifdef __DEBUG_COM__
         comTime1 = micros();
+    #endif
         lynxRecvPacket();
         if (comCode == COM_ERR_OK || comCode == COM_ERR_RESENT) {
             // Send reply immediately (almost)
             delayMicroseconds(6*lynxBitPeriod);   // Bauds: 62500=6* / 41666=8* / 9600=2*
-            preparePacket();
+            lynxPreparePacket();
             lynxSendPacket();
-        }  
+        }
+    #ifdef __DEBUG_COM__
         comTime2 = micros();
+    #endif
     }    
-#ifdef __DEBUG_COM__
+
+    // Display transfer rate
+#ifdef __DEBUG_IO__
+    if (millis()-timerIO > 5000) {
+        timerIO = millis();
+        Serial.print(" Rate: in=");
+        Serial.print(inRec/5); Serial.print("b/s, out=");
+        Serial.print(outRec/5); Serial.print("b/s, err(in)=");
+        Serial.print(inErr); Serial.print(", stall(in)=");
+        Serial.print(inSta); Serial.print(", stall(out)=");
+        Serial.println(outSta); 
+        inRec = 0; inErr = 0; inSta = 0; 
+        outRec = 0; outSta = 0;
+    } 
+#endif
+    
     // Display COM Stats
+#ifdef __DEBUG_COM__
     if (comCode != COM_ERR_NODATA) {
         comErr[comCode] += 1;
         //Serial.print(comCnt++);
         //Serial.print(" Tim="); Serial.print(comTime2-comTime1);
+        Serial.print(" (RX)");
+        Serial.print(" ID=C");  Serial.print(comID & 0x0f);
+        Serial.print(",H"); Serial.print(comID >> 4);
+        Serial.print(" Len="); Serial.print(comInLen);
+        Serial.print(" (TX)");
+        Serial.print(" ID=H"); Serial.print(hubID);
+        Serial.print(" Len="); Serial.print(hubLen);
+        Serial.print(" (ERR)");        
         Serial.print(" Head="); Serial.print(comErr[COM_ERR_HEADER]);
         Serial.print(" Trnc="); Serial.print(comErr[COM_ERR_TRUNCAT]);
         Serial.print(" Crpt="); Serial.print(comErr[COM_ERR_CORRUPT]);
-        Serial.print(" Rsnt="); Serial.print(comErr[COM_ERR_RESENT]);
-        Serial.print(" (Rx)");
-        Serial.print(" ID=C");  Serial.print(comID & 0x0f);
-        Serial.print(",H"); Serial.print(comID >> 4);
-        Serial.print(" Len="); Serial.print(comLen);
-        Serial.print(" (Tx)");
-        Serial.print(" ID=H"); Serial.print(hubID);
-        Serial.print(" Len="); Serial.println(hubLen);
+        Serial.print(" Rsnt="); Serial.println(comErr[COM_ERR_RESENT]);
     }
 #endif
+
     // Process commands from COM
     if (comCode == COM_ERR_OK) {
-        if (comLen) processComCMD();
+        if (comInLen) processComCMD();
     }
     comCode = COM_ERR_NODATA;
 }
+
+////////////////////////////////
+//        JPG functions       //
+////////////////////////////////
+/*
+
+#include <picojpeg.h>
+
+const unsigned char lynxPaletteR[] = {165,  66,  66,  49,  49,  33,  33, 115, 231, 247, 247, 214, 132, 247, 132, 0};
+const unsigned char lynxPaletteG[] = { 16,  49, 132, 198, 198, 132,  82,  82, 115, 231, 148,  49,  33, 247, 132, 0};
+const unsigned char lynxPaletteB[] = {198, 181, 198, 198,  82,  33,  82,  33,  82,   0, 165,  66,  66, 247, 132, 0};
+
+File jpgFile;
+unsigned int jpgSize, jpgOfs;
+
+uint8_t callbackJPG(uint8_t* pBuf, uint8_t buf_size, uint8_t *pBytes_actually_read, void *pCallback_data) {
+    unsigned int n = MIN(jpgSize - jpgOfs, buf_size);
+    *pBytes_actually_read = (uint8_t)(n);
+    jpgFile.read(pBuf,n);
+    jpgOfs += n;
+    return 0;    
+}
+
+void decodeJPG(unsigned char* filename) {
+    // Open file from SD card
+    uint32_t timer = millis();     
+
+    // Open jpeg file from SD card
+    jpgFile = SD.open(filename, FILE_READ);
+    jpgSize = jpgFile.size();
+    jpgOfs = 0;
+
+    // Initialize decoder
+    pjpeg_image_info_t jpgInfo;
+    unsigned char status = pjpeg_decode_init(&jpgInfo, callbackJPG, NULL, 0);
+    if (status) {
+      Serial.print("pjpeg_decode_init() failed with status ");
+      Serial.println(status);
+      if (status == PJPG_UNSUPPORTED_MODE) {
+        Serial.println("Progressive JPEG files are not supported.");
+      }
+      return;
+    }
+    
+    // Open cache file to store decoded image
+    if (SD.exists("cache")) { SD.remove("cache"); }
+    File cacheFile = SD.open("cache", FILE_WRITE);
+    
+    // Scanning variables
+    unsigned int xElt, yElt;
+    unsigned char xElt8, yElt8;
+    unsigned char xMin, xMax, yMin, yMax;
+    unsigned int palDist, palMini;
+    unsigned char palIndex;
+    unsigned char bmp[9][82];
+
+    // Scan through block rows
+    for (unsigned int yMCU=0; yMCU<jpgInfo.m_height; yMCU+=jpgInfo.m_MCUHeight) {
+
+        // Computer's Y coordinate range
+        yMin = (102 * (yMCU                    )) / jpgInfo.m_height;
+        yMax = (102 * (yMCU+jpgInfo.m_MCUHeight)) / jpgInfo.m_height;
+        yMax = MIN(yMax, 102);
+
+        // Reset bmp array
+        for (unsigned int y=yMin; y<yMax; y++) {
+            bmp[y-yMin][0] = 0x52;
+            memset(&bmp[y-yMin][1], 0, 81);
+        }
+
+        // Scan through block cols
+        for (unsigned int xMCU=0; xMCU<jpgInfo.m_width; xMCU+=jpgInfo.m_MCUWidth) {
+
+            // Computer's X coordinate range
+            xMin = (160 * (xMCU                   )) / jpgInfo.m_width;
+            xMax = (160 * (xMCU+jpgInfo.m_MCUWidth)) / jpgInfo.m_width;
+            xMax = MIN(xMax, 160);
+
+            // Decode this block
+            pjpeg_decode_mcu();
+    
+            // Scan Y coordinate range
+            for (unsigned int y=yMin; y<yMax; y++) {
+                yElt = (y * jpgInfo.m_height)/102 - yMCU;  yElt8 = yElt/8;
+                //Serial.print((byte)y); Serial.print(": ");
+    
+                // Scan X coordinate range
+                for (unsigned int x=xMin; x<xMax; x++) {
+                    xElt = (x * jpgInfo.m_width)/160 - xMCU;  xElt8 = xElt/8;
+                    //Serial.print((byte)x); Serial.print(", ");
+    
+                    // Compute offset of element
+                    unsigned int block_ofs = (xElt8 * 8U) + (yElt8 * 16U);
+                    unsigned int elt_oft = 8*(yElt%8) + (xElt%8);
+                    const uint8_t *pSrcR = jpgInfo.m_pMCUBufR + block_ofs + elt_oft;
+                    const uint8_t *pSrcG = jpgInfo.m_pMCUBufG + block_ofs + elt_oft;
+                    const uint8_t *pSrcB = jpgInfo.m_pMCUBufB + block_ofs + elt_oft;
+    
+                    // Find matching palette color
+                    palMini = 3*256;
+                    for (byte i=0; i<16; i++) {
+                        palDist = abs(lynxPaletteR[i] - *pSrcR) + abs(lynxPaletteG[i] - *pSrcG) + abs(lynxPaletteB[i] - *pSrcB);
+                        if (palDist<palMini) {
+                            palIndex = i; 
+                            palMini = palDist;
+                        }
+                    }
+
+                    // Save to bmp buffer
+                    bmp[y-yMin][x/2+1] |= palIndex << (4*((x+1)%2));
+                    //Serial.print(palIndex); Serial.print(",");                
+                }
+                //Serial.println();
+            }
+            //Serial.println();
+        }
+
+        // Write to char file
+        cacheFile.write(&bmp[0][0], 82*(yMax-yMin));
+    }
+
+    // Close files
+    cacheFile.write((byte)0x00);
+    cacheFile.close();  
+    jpgFile.close();
+#ifdef __DEBUG_JPG__ 
+    Serial.println(F("JPEG image info"));
+    Serial.print("Width      : "); Serial.println(jpgInfo.m_width);
+    Serial.print("Height     : "); Serial.println(jpgInfo.m_height);
+    Serial.print("Scan type  : "); Serial.println(jpgInfo.m_scanType);
+    Serial.print("MCU/row    : "); Serial.println(jpgInfo.m_MCUSPerRow);
+    Serial.print("MCU/col    : "); Serial.println(jpgInfo.m_MCUSPerCol);
+    Serial.print("MCU/width  : "); Serial.println(jpgInfo.m_MCUWidth);
+    Serial.print("MCU/height : "); Serial.println(jpgInfo.m_MCUHeight);
+    Serial.print("Render time: "); Serial.print(millis()-timer); Serial.println(" ms");
+#endif  
+}
+*/
