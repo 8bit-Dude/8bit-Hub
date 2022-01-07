@@ -1,4 +1,4 @@
-
+  
 // System libraries
 #include <FS.h>
 #include <ps2mouse.h>
@@ -8,8 +8,11 @@
 #include <WiFiClient.h>
 #include <WiFiUdp.h>
 
+// Debugging
+//#define __DEBUG_WIFI__
+
 // Firmware Version
-char espVersion[] = "v0.4";
+char espVersion[] = "v0.5";
 
 // HUB Commands
 #define HUB_SYS_ERROR     0
@@ -53,6 +56,7 @@ char espVersion[] = "v0.4";
 // ESP Params
 #define SLOTS    8     // Number of tcp/udp handles
 #define PACKET   256   // Max. packet length (bytes)
+#define TIMEOUT  10000 // Wifi connection timeout (msec)
 
 // Wifi connection params
 char ssid[32], pswd[64];
@@ -437,27 +441,45 @@ void reply(unsigned char type, char *message) {
 //        ESP functions       //
 ////////////////////////////////
 
-void wifiConnect(char *ssid, char *pswd) {
-    // Make sure WiFi is out
-    WiFi.disconnect();
-    
-    // Connect to Network
-    WiFi.begin(ssid, pswd);
-       
-    // Wait for Connection
-    unsigned long timeout = millis()+9000;
-    while (WiFi.status() != WL_CONNECTED) {
-        if (millis() > timeout) {
-          reply(HUB_SYS_IP, "Not connected..."); 
-          return;
-        }
-        delay(10);
-    }  
+boolean connected = false;
+char ssidLog[32] = "", pswdLog[64] = "";
+unsigned long timeout = 0;
 
-    // Send back IP address
-    char ip[17];
-    WiFi.localIP().toString().toCharArray(ip, 16);
-    reply(HUB_SYS_IP, ip);
+void wifiCheck(char *ssid, char *pswd) {
+    // Did SSID/PSWD change?
+    if (strcmp(ssid, ssidLog) || strcmp(pswd, pswdLog)) {
+        if (WiFi.status() == WL_CONNECTED)
+            WiFi.disconnect();  // Cut-out current connection
+        strcpy(ssidLog, ssid);  // Update credentials
+        strcpy(pswdLog, pswd);
+        if (!ssid[0]) return;   // Create new connection?
+    #if defined(__DEBUG_WIFI__)
+        Serial.println("Updated credentials");            
+    #endif
+        timeout = millis()+TIMEOUT;
+        WiFi.begin(ssid, pswd);  
+    }
+
+    // Do we have an SSID?
+    if (!ssid[0]) return;
+
+    // Check current status
+    if (WiFi.status() != WL_CONNECTED) {
+        connected = false;
+        if (millis() > timeout) {
+            // Update Time-out        
+            reply(HUB_SYS_IP, "Not connected..."); 
+            timeout = millis()+TIMEOUT;
+        }
+    } else {
+        if (!connected) {
+            // Send back IP address
+            char ip[17];
+            WiFi.localIP().toString().toCharArray(ip, 16);
+            reply(HUB_SYS_IP, ip);
+            connected = true;
+        }
+    }
 }
 
 void wifiIP() {
@@ -511,7 +533,6 @@ void processCMD() {
         readBuffer(ssid);
         readBuffer(pswd);
         socketPeriod = readChar();
-        wifiConnect(ssid, pswd);
         break;
 
       case HUB_SYS_IP:
@@ -611,14 +632,18 @@ void processCMD() {
 ////////////////////////////////
 
 void setup(void) {
-    setupSERIAL();    
+    setupSERIAL();
     SPIFFS.begin();  // Mount Flash File System (for temporary storage of files)
+#if defined(__DEBUG_WIFI__)
+    Serial.println("\nConnecting to Wifi...");
+    strcpy(ssid, "8bit-Unity");
+    strcpy(pswd, "0123456789");
+#endif
 }
 
 void loop(void) {
-    // Auto-reconnect?
-    if (WiFi.status() != WL_CONNECTED)
-        if (ssid[0]) wifiConnect(ssid, pswd);
+    // Auto-reconnect (in case connection is lost)
+    wifiCheck(ssid, pswd);
     
     // Process commands from MEGA
     if (Serial.find("CMD"))
