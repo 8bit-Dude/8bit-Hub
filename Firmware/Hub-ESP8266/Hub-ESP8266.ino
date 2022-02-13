@@ -12,7 +12,7 @@
 //#define __DEBUG_WIFI__
 
 // Firmware Version
-char espVersion[] = "v0.5";
+char espVersion[] = "v0.6";
 
 // HUB Commands
 #define HUB_SYS_ERROR     0
