@@ -1,9 +1,9 @@
 /*
  *	API of the "8bit-Hub" for CC65
  *	
- *	Last modified: 2022/02/20
+ *	Last modified: 2022/02/23
  *	
- * Copyright (c) 2019 Anthony Beaucamp.
+ * Copyright (c) 2022 Anthony Beaucamp.
  *
  * This software is provided 'as-is', without any express or implied warranty.
  * In no event will the authors be held liable for any damages arising from

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019 Anthony Beaucamp.
+ * Copyright (c) 2022 Anthony Beaucamp.
  *
  * This software is provided 'as-is', without any express or implied warranty.
  * In no event will the authors be held liable for any damages arising from
@@ -24,32 +24,15 @@
  *   specific prior written permission.
  */
  
-#include "hub.h"
+#include "hub.h" 
 
-#if defined __ATMOS__
-  #define __ORIC__
-#endif 
-
-// Debugging flags
-//#define DEBUG_HUB
-#if defined(DEBUG_HUB)
-  unsigned char i, ok, hd, tr, co, chk1, chk2, dbgID, dbgLen;
-  clock_t tic, toc;
-#endif  
-
-// Serial functions
-#if defined(__APPLE2__)
-  unsigned char byte;	
-  unsigned char RecvByte() { return 0; }
-  unsigned char SendByte() { return 0; }
-//  struct ser_params comParm = { SER_BAUD_19200, SER_BITS_8, SER_STOP_1, SER_PAR_NONE, SER_HS_HW };
-#elif defined(__LYNX__)
+// Read/Write functions
+#if defined(__LYNX__)
   #include <serial.h>
   unsigned char __fastcall__ SerialOpen(void* data); // See serial.s
   unsigned char __fastcall__ SerialGet(unsigned char* data);
   unsigned char __fastcall__ SerialPut(unsigned char data);
-  unsigned char comParm = 0;  //struct ser_params comParm = { SER_BAUD_62500, SER_BITS_8, SER_STOP_1, SER_PAR_SPACE, SER_HS_NONE };							  
-  unsigned char byte;	
+  unsigned char byte, comParm = 0; 
   unsigned char RecvByte() {
 	unsigned int i = 512;
 	while (i) {  // Countdown i to 0
@@ -79,7 +62,7 @@
   void InputMode();
   void OutputMode(); 
  #endif
- #ifdef __ORIC__
+ #ifdef __ATMOS__
   void ClosePort();
  #endif  
   unsigned char SendByte();
@@ -87,18 +70,11 @@
   extern unsigned char byte;
 #endif
 
-#if defined __NES__
- #pragma bss-name(push, "XRAM")
-#endif 
-
 // Hub State
 unsigned char hubState[7] = { COM_ERR_OFFLINE, 255, 255, 255, 255, 255, 255 };
 unsigned char hubID, hubOutLen, *hubOutBuffer, hubInLen, hubInBuffer[HUB_BUFFER_LEN];
 
-#if defined __NES__
-  #pragma bss-name(pop)
-#endif 
-
+// Hub Functions
 unsigned char InitHub(void) 
 {
 	// Was hub already initialized?
@@ -127,7 +103,7 @@ unsigned char SendHub(unsigned char cmd)
 {
 	unsigned char i, j = 0, checksum, acknow = 0;
 	
-  #if defined(__ORIC__)
+  #if defined(__ATMOS__)
 	__asm__("sei");		// Disable interrupts
   #endif	
 	
@@ -136,7 +112,7 @@ unsigned char SendHub(unsigned char cmd)
 		// Setup for sending
 	  #if defined(__LYNX__) // || defined(__APPLE2__)
 		while (SerialGet(&i) == SER_ERR_OK); // Clear UART Buffer
-	  #elif defined(__ATARI__) || defined(__CBM__) || defined(__ORIC__)
+	  #elif defined(__ATARI__) || defined(__CBM__) || defined(__ATMOS__)
 		OutputMode();
 	  #endif	
 
@@ -159,7 +135,7 @@ unsigned char SendHub(unsigned char cmd)
 
 		///////////////////////
 		// Setup for receiving
-	  #if defined(__ATARI__) || defined(__CBM__) || defined(__ORIC__)  
+	  #if defined(__ATARI__) || defined(__CBM__) || defined(__ATMOS__)  
 		InputMode();
 	  #endif		
 
@@ -172,7 +148,7 @@ unsigned char SendHub(unsigned char cmd)
 	}
 	
 	SendError:
-  #if defined(__ORIC__)
+  #if defined(__ATMOS__)
 	ClosePort();
 	__asm__("cli");		// Resume interrupts	
   #endif
@@ -184,7 +160,7 @@ unsigned char RecvHub(unsigned char cmd)
 {
 	unsigned char i, ID, checksum, *buf, acknow = 0;
 
-  #if defined(__ORIC__)
+  #if defined(__ATMOS__)
 	__asm__("sei");		// Disable interrupts
   #endif	
 
@@ -192,7 +168,7 @@ unsigned char RecvHub(unsigned char cmd)
 	// Setup for sending
   #if defined(__LYNX__) // || defined(__APPLE2__)
 	while (SerialGet(&i) == SER_ERR_OK); // Clear UART Buffer
-  #elif defined(__ATARI__) || defined(__CBM__) || defined(__ORIC__)
+  #elif defined(__ATARI__) || defined(__CBM__) || defined(__ATMOS__)
 	OutputMode();
   #endif	
   
@@ -203,7 +179,7 @@ unsigned char RecvHub(unsigned char cmd)
   
 	///////////////////////
 	// Setup for receiving
-  #if defined(__ATARI__) || defined(__CBM__) || defined(__ORIC__)  
+  #if defined(__ATARI__) || defined(__CBM__) || defined(__ATMOS__)  
 	InputMode();
   #endif	
 	
@@ -256,35 +232,10 @@ unsigned char RecvHub(unsigned char cmd)
 	}
 
 	RecvError:
-  #if defined(__ORIC__)
+  #if defined(__ATMOS__)
 	ClosePort();
 	__asm__("cli");		// Resume interrupts	
   #endif  	
-	
-  #if defined DEBUG_HUB 
-	// Increment error code
-	switch (hubState[0]) {
-	case COM_ERR_OK:      
-		ok+=1; break;
-	case COM_ERR_HEADER:
-		hd+=1; break;
-	case COM_ERR_TRUNCAT:
-		tr+=1; break;
-	case COM_ERR_CORRUPT:
-		co+=1; break;
-	}
-	// Display info
-	gotoxy(0,  TXT_ROWS-3); cprintf("TC:%u ", toc-tic); 
-	gotoxy(7,  TXT_ROWS-3); cprintf("LN:%u ", hubInLen);
-	 if (hubState[0] == COM_ERR_OK)      { ok+=1; gotoxy(14, TXT_ROWS-3); cprintf("OK:%u", ok); }
-else if (hubState[0] == COM_ERR_HEADER)  { hd+=1; gotoxy(21, TXT_ROWS-3); cprintf("HD:%u", hd); }	
-else if (hubState[0] == COM_ERR_TRUNCAT) { tr+=1; gotoxy(28, TXT_ROWS-3); cprintf("TR:%u", tr); } 
-else if (hubState[0] == COM_ERR_CORRUPT) { co+=1; gotoxy(35, TXT_ROWS-3); cprintf("CO:%u", co); } 
-	gotoxy(0,  TXT_ROWS-2); cprintf("CTRL:"); for (i=1; i<7; i++) { cprintf("%u,", hubState[i]); } 
-	gotoxy(0,  TXT_ROWS-1); cprintf("ID:%u ", ID); 
-	gotoxy(7,  TXT_ROWS-1); cprintf("C1:%u ", byte); 
-	gotoxy(14, TXT_ROWS-1); cprintf("C2:%u ", checksum);
-  #endif
-  
+	  
 	return acknow;
 }
