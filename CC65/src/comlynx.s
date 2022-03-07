@@ -199,12 +199,14 @@ PutByte:
 IRQ:
         lda     INTSET          ; Poll all pending interrupts
         and     #SERIAL_INTERRUPT
-        bne     @L0
-        clc
-        rts
-@L0:
+	bne	@doIRQ
+		clc
+		rts
+		
+@doIRQ:	
         bit     TxDone
         bmi     @tx_irq     ; Transmit in progress
+
         ldx     SERDAT
         lda     SERCTL
         and     #RxParityErr|RxOverrun|RxFrameErr|RxBreak
@@ -237,8 +239,6 @@ IRQ:
         cpx     RxPtrOut
         beq     @1
         stx     RxPtrIn
-        lda     #SERIAL_INTERRUPT
-        sta     INTRST
         bra     @IRQexit
 
 @1:
@@ -255,11 +255,7 @@ IRQ:
         inc     TxPtrOut
 
 @exit1:
-        lda     contrl
-        ora     #TxIntEnable|ResetErr
-        sta     SERCTL
-        lda     #SERIAL_INTERRUPT
-        sta     INTRST
+        lda     #TxIntEnable|ResetErr
         bra     @IRQexit
 
 @allSent:
@@ -268,13 +264,15 @@ IRQ:
         beq     @exit1
         bvs     @exit1
         stz     TxDone
-        lda     contrl
-        ora     #RxIntEnable|ResetErr
+
+        lda     #RxIntEnable|ResetErr
+
+@IRQexit0:
+        ora     contrl
         sta     SERCTL
 
+@IRQexit:
         lda     #SERIAL_INTERRUPT
         sta     INTRST
-@IRQexit:
         clc
-        rts	
-		
+        rts
