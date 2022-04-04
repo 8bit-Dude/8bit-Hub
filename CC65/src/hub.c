@@ -27,12 +27,46 @@
 #include "hub.h" 
 
 // Read/Write functions
-#if defined(__LYNX__)
+#if defined(__APPLE2__)
   #include <serial.h>
-  unsigned char __fastcall__ SerialOpen(void* data); // See serial.s
+  #include <peekpoke.h>
+  unsigned char __fastcall__ SerialOpen(void* ptr);
   unsigned char __fastcall__ SerialGet(unsigned char* data);
   unsigned char __fastcall__ SerialPut(unsigned char data);
-  unsigned char byte, comParm = 0; 
+  const struct ser_params comParm = { SER_BAUD_19200, SER_BITS_8, SER_STOP_1, SER_PAR_NONE, SER_HS_HW };
+  unsigned char byte;
+  unsigned char RecvByte() {
+	unsigned int i = 512;
+	while (i) {  // Countdown i to 0
+		// This code works only in AppleWin (interrupt fires off)
+		if (SerialGet(&byte) == SER_ERR_OK) 
+			return 1;
+		
+		// This code works on real hardware
+		if (PEEK(0xC089+32)&8) {
+			byte = PEEK(0xC088+32);
+			return 1;
+		}		
+		i--;
+	}
+	return 0;
+  }
+  unsigned char SendByte() {
+	unsigned char i = 255;
+	while (i) {  // Countdown i to 0
+		if (SerialPut(byte) == SER_ERR_OK) 	// Send byte
+			return 1;
+		i--;
+	}
+	return 0;
+  }  
+#elif defined(__LYNX__)
+  #include <serial.h>
+  unsigned char __fastcall__ SerialOpen(void* ptr); 
+  unsigned char __fastcall__ SerialGet(unsigned char* data);
+  unsigned char __fastcall__ SerialPut(unsigned char data);
+  unsigned char comParm = 0; 
+  unsigned char byte; 
   unsigned char RecvByte() {
 	unsigned int i = 512;
 	while (i) {  // Countdown i to 0
@@ -81,7 +115,7 @@ unsigned char InitHub(void)
 	unsigned char hubVersion = HUB_CLIENT_VER;
 	if (hubState[0] == COM_ERR_OFFLINE) {
 		// Setup serial port
-	  #if defined(__LYNX__) // || defined(__APPLE2__)
+	  #if defined(__LYNX__) || defined(__APPLE2__)
 		SerialOpen(&comParm); 
 	  #endif	
 	  
@@ -110,7 +144,7 @@ unsigned char SendHub(unsigned char cmd)
 	while (j++ < HUB_SEND_RETRY) {
 		/////////////////////
 		// Setup for sending
-	  #if defined(__LYNX__) // || defined(__APPLE2__)
+	  #if defined(__LYNX__) || defined(__APPLE2__)
 		while (SerialGet(&i) == SER_ERR_OK); // Clear UART Buffer
 	  #elif defined(__ATARI__) || defined(__CBM__) || defined(__ATMOS__)
 		OutputMode();
@@ -166,7 +200,7 @@ unsigned char RecvHub(unsigned char cmd)
 
 	/////////////////////
 	// Setup for sending
-  #if defined(__LYNX__) // || defined(__APPLE2__)
+  #if defined(__LYNX__) || defined(__APPLE2__)
 	while (SerialGet(&i) == SER_ERR_OK); // Clear UART Buffer
   #elif defined(__ATARI__) || defined(__CBM__) || defined(__ATMOS__)
 	OutputMode();

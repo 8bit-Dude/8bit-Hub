@@ -1,6 +1,13 @@
 echo off
 
-set PATH=%PATH%;"..\..\8bit-unity\utils\cc65\bin\"
+set PATH=%PATH%;"..\..\8bit-unity\utils\cc65\bin\";"..\..\8bit-unity\utils\java\bin\"
+
+echo "Apple Compilation"
+cc65 -Cl -O -t apple2 src/hub.c
+cl65 -o loader.bin -Cl -O -t apple2 src/main.c src/hub.s src/serial.s
+copy utils\ProDOS190-140K.po hub-apple.do
+java -jar utils/AppleCommander-1.6.0.jar -as hub-apple.do LOADER bin 0x0803 < loader.bin
+del loader.bin
 
 echo "Lynx Compilation"
 cc65 -Cl -O -t lynx --cpu 65SC02 src/hub.c
