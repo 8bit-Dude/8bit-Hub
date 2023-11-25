@@ -1418,7 +1418,7 @@ void comProcessCMD() {
         // Send back file size
         length = hubFile[comInBuffer[0]].size();
         memcpy(serBuffer, (char*)&length, 4); serLen = 4;
-        pushPacket(HUB_FILE_OPEN, comInBuffer[0]);
+        pushPacket(HUB_FILE_OPEN, -1);
         break;
 
     case HUB_FILE_SEEK:
