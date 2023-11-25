@@ -1396,6 +1396,49 @@ void comProcessCMD() {
         pushPacket(HUB_SYS_IP, -1);
         break;
 
+    case HUB_DIR_LS: // Todo: Implement for root directory /microSD
+        {
+            unsigned char skip = comInBuffer[0];
+            unsigned char count = 0;
+            length = 1;
+
+            // TODO: we may want to start a different dir if CD is implemented
+            File dir = SD.open("/");
+            while (true) {
+                File entry =  dir.openNextFile();
+                if (!entry) {
+                    // no more files
+                    break;
+                }
+                if (!entry.isDirectory()){
+                    // skip any dir; TODO: change when CD is implemented
+                    if( skip!=0){
+                        // skip entries as requested
+                        skip--;
+                    }else{
+                        unsigned int slen=strlen(entry.name());
+                        if( length+slen+3>255){
+                            // printf("Buffer length exceeded!");
+                            break;
+                        }
+                        memcpy(&serBuffer[length], entry.name(), slen);
+                        length += slen;
+                        serBuffer[length++] = 0;
+                        serBuffer[length++] = (unsigned char)(entry.size() & 0xff);
+                        serBuffer[length++] = (unsigned char)((entry.size() >> 8)&0xff);
+                        count++;
+                    }
+                }
+
+                entry.close();
+            }
+            dir.close();
+            serBuffer[0] = count;
+        }
+
+        pushPacket(HUB_DIR_LS, -1);
+        break;
+
     case HUB_FILE_OPEN:
         // Check if file was previously opened
         if (hubFile[comInBuffer[0]])
