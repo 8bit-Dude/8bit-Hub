@@ -1434,6 +1434,7 @@ void comProcessCMD() {
             }
             dir.close();
             serBuffer[0] = count;
+            serLen = length;
         }
 
         pushPacket(HUB_DIR_LS, -1);
