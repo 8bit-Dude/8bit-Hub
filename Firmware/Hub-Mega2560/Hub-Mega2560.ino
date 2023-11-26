@@ -72,7 +72,7 @@ char urlVer[]  = "http://8bit-unity.com/Hub-Version.txt";
   const char* cmdString[] = 
   {"SYS_ERROR","SYS_RESET","SYS_NOTIF", "SYS_SCAN",  "SYS_CONNECT","SYS_IP",   "SYS_MOUSE","SYS_VERSION","SYS_UPDATE","",
    "DIR_LS",   "DIR_MK",   "DIR_RM",    "DIR_CD",    "",           "",         "",         "",           "",          "",
-   "FILE_OPEN","FILE_SEEK","FILE_READ", "FILE_WRITE","FILE_CLOSE", "",         "",         "",           "",          "",
+   "",         "FILE_OPEN","FILE_SEEK", "FILE_READ", "FILE_WRITE", "FILE_CLOSE","",         "",           "",          "",
    "UDP_OPEN", "UDP_RECV", "UDP_SEND",  "UDP_CLOSE", "UDP_SLOT",   "",         "",         "",           "",          "",
    "TCP_OPEN", "TCP_RECV", "TCP_SEND",  "TCP_CLOSE", "TCP_SLOT",   "",         "",         "",           "",          "",
    "WEB_OPEN", "WEB_RECV", "WEB_HEADER","WEB_BODY",  "WEB_SEND",   "WEB_CLOSE","",         "",           "",          "",
