@@ -373,7 +373,7 @@ void writeLong(unsigned long input) {
     Serial.write((char*)&input, 4);
 }
 
-void writeBuffer(char* buffer, unsigned char len) {
+void writeBuffer(const char* buffer, unsigned char len) {
     Serial.write(len);
     Serial.write(buffer, len);
 }
@@ -432,7 +432,7 @@ unsigned char readBuffer(char *buffer) {
     return len;
 }
 
-void reply(unsigned char type, char *message) {
+void reply(unsigned char type, const char *message) {
     writeCMD(type);    
     writeBuffer(message, strlen(message));  
 }
