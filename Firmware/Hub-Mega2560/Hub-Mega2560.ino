@@ -170,7 +170,7 @@ typedef struct packet {
 packet_t* packetHead = NULL;
 unsigned char packetID = 0;
 
-void pushPacket(unsigned char cmd, signed char slot) {
+void pushPacket(unsigned char cmd, unsigned char slot) {
     // Create new packet
     packet_t* packet = malloc(sizeof(packet_t));
     packet->next = NULL;
@@ -202,7 +202,7 @@ void pushPacket(unsigned char cmd, signed char slot) {
 #endif
 }
 
-packet_t *getPacket(unsigned char cmd, signed char slot) {
+packet_t *getPacket(unsigned char cmd, unsigned char slot) {
     // Find packet with matching cmd/slot
     packet_t *packet = packetHead;
     while (packet) {
